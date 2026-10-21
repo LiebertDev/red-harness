@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redharness"
+version = "0.1.0"
+description = "Red Harness: a defensive, evidence-bound reverse-engineering analysis harness"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+# Official MCP Python SDK, pinned version (PyPI upload date 2026-09-07; a release at least 2 weeks old was chosen).
+dependencies = ["mcp==1.30.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+# `emulate` tool (docs/design/emulation.md): the Unicorn CPU emulator from PyPI, pinned. Optional: without it the tool
+# answers EMULATOR_MISSING. Not bundled or redistributed by the harness (licence note in the design doc).
+emulate = ["unicorn==2.1.4"]
+# idapro (the idalib bridge) is DELIBERATELY NOT a dependency/extra: its publisher on PyPI is unverified
+# (supply-chain risk). Install it from the local wheel in the IDA installation, see docs/usage-mcp.md:
+#   pip install "<IDA>\idalib\python\idapro-<version>-py3-none-any.whl"   (exact file name; pip rejects a wildcard)
+# py-activate-idalib.py is NOT run. Without idapro the IDA backend returns TOOL_MISSING ("unavailable").
+
+[project.scripts]
+rh = "redharness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"redharness.sandbox" = ["guest.ps1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["heavy: needs a real engine (Ghidra/IDA) or Windows Sandbox", "real_sandbox: starts a real Windows Sandbox; skipped unless RH_ALLOW_REAL_SANDBOX=1","hyperv: Phase 2 Hyper-V VM control against the real VM (read-only/no-op); skipped unless RH_ALLOW_HYPERV=1"]

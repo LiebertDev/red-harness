@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "red-harness": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\red-harness\\.venv\\Scripts\\rh.exe",
+      "args": ["mcp", "--engine", "ghidra"],
+      "env": {
+        "RH_GHIDRA_DIR": "C:\\path\\to\\ghidra_12.1.3_PUBLIC",
+        "RH_DATA_ROOT": "C:\\path\\to\\RedHarnessData"
+      }
+    }
+  }
+}

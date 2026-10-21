@@ -1,0 +1,6 @@
+Red Harness
+Copyright 2026 LiebertDev
+Licensed under Apache-2.0 (see LICENSE).
+
+Third-party tools that Red Harness can use are not bundled; their licences are listed in THIRD_PARTY_NOTICES.md and
+the upstream licence texts are in licenses/.

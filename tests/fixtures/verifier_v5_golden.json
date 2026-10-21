@@ -1,0 +1,599 @@
+{
+ "cases": {
+  "absent_complete": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ABSENCE_COVERAGE",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": []
+  },
+  "beh_run_fed_and_output": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    },
+    {
+     "code": "BEHAVIOR_NEEDS_EXECUTION",
+     "ok": true
+    },
+    {
+     "code": "PROVEN_CONDITIONS",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "PROVEN",
+   "values": [
+    {
+     "derived": true,
+     "source": "declared",
+     "supported": true,
+     "value": "secret"
+    }
+   ]
+  },
+  "beh_run_no_output_atom": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    },
+    {
+     "code": "BEHAVIOR_NEEDS_EXECUTION",
+     "ok": false
+    }
+   ],
+   "issues": [
+    {
+     "code": "BEHAVIOR_NEEDS_EXECUTION",
+     "detail": "behavior claim (what the program does when run) needs controlled-run evidence",
+     "severity": "UNVERIFY"
+    },
+    {
+     "code": "PROVEN_NEEDS_OBSERVED_OUTPUT",
+     "detail": "cite a quote atom from the run output (e.g. 'License valid') or a value that appears in it",
+     "severity": "UNVERIFY"
+    }
+   ],
+   "status": "UNVERIFIED",
+   "values": [
+    {
+     "derived": true,
+     "source": "declared",
+     "supported": true,
+     "value": "secret"
+    }
+   ]
+  },
+  "beh_run_wrong_input": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": false
+    },
+    {
+     "code": "BEHAVIOR_NEEDS_EXECUTION",
+     "ok": true
+    }
+   ],
+   "issues": [
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "detail": "qwerty",
+     "severity": "UNVERIFY"
+    }
+   ],
+   "status": "UNVERIFIED",
+   "values": [
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "derived": false,
+     "source": "quoted",
+     "supported": false,
+     "value": "qwerty"
+    }
+   ]
+  },
+  "beh_static_only": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    },
+    {
+     "code": "BEHAVIOR_NEEDS_EXECUTION",
+     "ok": false
+    }
+   ],
+   "issues": [
+    {
+     "code": "BEHAVIOR_NEEDS_EXECUTION",
+     "detail": "behavior claim (what the program does when run) needs controlled-run evidence",
+     "severity": "UNVERIFY"
+    },
+    {
+     "code": "PROVEN_NEEDS_CONTROLLED_REPLAY",
+     "detail": "yalıtılmış çalıştırma kanıtı yok",
+     "severity": "UNVERIFY"
+    }
+   ],
+   "status": "UNVERIFIED",
+   "values": [
+    {
+     "derived": false,
+     "source": "quoted",
+     "supported": true,
+     "value": "qwerty"
+    }
+   ]
+  },
+  "inferred_kind": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": []
+  },
+  "obs_address_atom": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": []
+  },
+  "obs_address_outside": {
+   "issues": [
+    {
+     "code": "ADDRESS_NOT_IN_LOCATIONS",
+     "detail": "atom[0]: 0x402000 not in evidence locations",
+     "severity": "REJECT"
+    },
+    {
+     "code": "HEX_LITERAL_UNSUPPORTED",
+     "detail": "0x402000",
+     "severity": "REJECT"
+    }
+   ],
+   "status": "REJECTED"
+  },
+  "obs_asm_word_not_number": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": []
+  },
+  "obs_atom_not_listed": {
+   "issues": [
+    {
+     "code": "ATOM_EVIDENCE_NOT_LISTED",
+     "detail": "atom[0]",
+     "severity": "REJECT"
+    }
+   ],
+   "status": "REJECTED"
+  },
+  "obs_constant_atom": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": []
+  },
+  "obs_constant_missing": {
+   "issues": [
+    {
+     "code": "CONSTANT_NOT_IN_RAW",
+     "detail": "atom[0]",
+     "severity": "REJECT"
+    }
+   ],
+   "status": "REJECTED"
+  },
+  "obs_decimal_value_missing": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": false
+    }
+   ],
+   "issues": [
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "detail": "33",
+     "severity": "UNVERIFY"
+    }
+   ],
+   "status": "UNVERIFIED",
+   "values": [
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "derived": false,
+     "source": "decimal",
+     "supported": false,
+     "value": "33"
+    }
+   ]
+  },
+  "obs_decimal_value_ok": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": [
+    {
+     "derived": false,
+     "source": "decimal",
+     "supported": true,
+     "value": "32"
+    },
+    {
+     "derived": false,
+     "source": "decimal",
+     "supported": true,
+     "value": "42"
+    }
+   ]
+  },
+  "obs_derived_static_only": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": false
+    }
+   ],
+   "issues": [
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "detail": "17",
+     "severity": "UNVERIFY"
+    },
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "detail": "4944",
+     "severity": "UNVERIFY"
+    }
+   ],
+   "status": "UNVERIFIED",
+   "values": [
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "derived": false,
+     "source": "declared",
+     "supported": false,
+     "value": "17"
+    },
+    {
+     "code": "VALUE_NOT_IN_EVIDENCE",
+     "derived": true,
+     "source": "declared",
+     "supported": false,
+     "value": "4944"
+    }
+   ]
+  },
+  "obs_hex_literal_malformed": {
+   "issues": [
+    {
+     "code": "HEX_LITERAL_MALFORMED",
+     "detail": "0x12zz",
+     "severity": "REJECT"
+    }
+   ],
+   "status": "REJECTED"
+  },
+  "obs_hex_literal_raw": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": []
+  },
+  "obs_hex_literal_substring_trap": {
+   "issues": [
+    {
+     "code": "HEX_LITERAL_UNSUPPORTED",
+     "detail": "0x10462",
+     "severity": "REJECT"
+    }
+   ],
+   "status": "REJECTED"
+  },
+  "obs_hex_quote_token": {
+   "issues": [
+    {
+     "code": "QUOTE_NOT_IN_RAW",
+     "detail": "atom[0]",
+     "severity": "REJECT"
+    }
+   ],
+   "status": "REJECTED"
+  },
+  "obs_quote_missing": {
+   "issues": [
+    {
+     "code": "QUOTE_NOT_IN_RAW",
+     "detail": "atom[0]",
+     "severity": "REJECT"
+    }
+   ],
+   "status": "REJECTED"
+  },
+  "obs_quote_ok": {
+   "checks": [
+    {
+     "code": "EVIDENCE_INTEGRITY",
+     "ok": true
+    },
+    {
+     "code": "NOT_INFERRED_ONLY",
+     "ok": true
+    },
+    {
+     "code": "ATOMS",
+     "ok": true
+    },
+    {
+     "code": "HEX_LITERALS",
+     "ok": true
+    },
+    {
+     "code": "VALUES_IN_EVIDENCE",
+     "ok": true
+    }
+   ],
+   "issues": [],
+   "status": "SUPPORTED",
+   "values": [
+    {
+     "derived": false,
+     "source": "quoted",
+     "supported": true,
+     "value": "qwerty"
+    }
+   ]
+  }
+ },
+ "verifier_version": "5"
+}

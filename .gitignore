@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+# the data root lives outside the repo; keep it out if it is put inside by mistake
+data/
+RedHarnessData/
+# disassembler databases and logs
+*.i64
+*.id0
+*.log
+# local secrets and the local MCP client config (copy .mcp.json.example to .mcp.json)
+.env
+.mcp.json
