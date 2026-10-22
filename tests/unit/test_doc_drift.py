@@ -22,7 +22,7 @@ from redharness.mcp.server import MAX_TOOLS
 ROOT = Path(__file__).resolve().parents[2]
 VAULT = (ROOT / "tools" / "export_public.py").is_file()
 
-_DOC_PATHS = ("README.md", "docs/usage-mcp.md",
+_DOC_PATHS = ("README.md", "docs/usage-mcp.md", "docs/verifier-messages.md",
               "public-overlay/README.md", "public-overlay/docs/usage-mcp.md")
 DOCS = [ROOT / rel for rel in _DOC_PATHS if (ROOT / rel).is_file()]
 

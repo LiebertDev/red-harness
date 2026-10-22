@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..core.lock import JobLock, LockError
 from ..core.result import Status
-from .base import EngineResult, Page
+from .base import EngineResult, Page, split_error
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 HEAVY = threading.Lock()
@@ -29,6 +29,7 @@ def sha256_file(path: Path) -> str:
 
 
 def fail(status: Status, detail: str, t0: float, **kw) -> EngineResult:
+    kw.setdefault("code", split_error(detail)[0])
     return EngineResult(status, None, detail, duration_s=time.monotonic() - t0, **kw)
 
 
@@ -95,5 +96,29 @@ def call_args_from_doc(doc: dict):
                 return None, f"bad parameter extent at 0x{int(r['a']):x}"
             out[int(r["a"])] = e
         return out, ""
+    except (KeyError, TypeError, ValueError) as e:
+        return None, f"field missing/corrupt: {e}"
+
+
+def bodies_from_doc(doc: dict):
+    """Backend `disasm_funcs` document -> `FunctionBodies`; (None, reason) when inconsistent/truncated (fail-closed)."""
+    from .base import FunctionBodies, FunctionBody
+    try:
+        rows = doc["functions"]
+        if doc.get("counts", {}).get("functions", len(rows)) != len(rows):
+            return None, "function count mismatch"
+        items = []
+        for r in rows:
+            dis, bad = disassembly_from_doc(r)
+            if dis is None:
+                return None, f"function 0x{int(r.get('function_address', 0)):x}: {bad}"
+            items.append(FunctionBody(int(r["function_address"]), str(r["function_name"]), int(r["size"]), dis))
+        total, nxt = int(doc["function_total"]), doc.get("next_index")
+        first = int(doc.get("first", 0))
+        if nxt is not None and (not isinstance(nxt, int) or isinstance(nxt, bool) or nxt != first + len(items)):
+            return None, "next_index inconsistent"
+        if nxt is None and first + len(items) != total:
+            return None, "chunk ends before the last function without a next_index"
+        return FunctionBodies(items, total, nxt), ""
     except (KeyError, TypeError, ValueError) as e:
         return None, f"field missing/corrupt: {e}"

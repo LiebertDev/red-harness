@@ -49,7 +49,7 @@ def _legacy_to_english(node, seen):
 # ---------- version and golden tests ----------
 
 def test_verifier_version_is_13():
-    assert V.VERIFIER_VERSION == "23"
+    assert V.VERIFIER_VERSION == "24"
 
 
 def test_v5_golden_corpus_verifies_identically(tmp_path):
@@ -60,7 +60,27 @@ def test_v5_golden_corpus_verifies_identically(tmp_path):
     expected, seen = copy.deepcopy(golden["cases"]), set()
     _legacy_to_english(expected, seen)
     assert seen == set(LEGACY_TEXT)  # every legacy key is really used; no Turkish text is left unmapped
+    _v24_control_pair(expected)
     assert corpus.build(tmp_path) == expected
+
+
+# Version 24 (control_pair): the corpus declares behavior_class="ordinary" for its behavior claims (_verifier_corpus);
+# its three validation-worded ones ("is accepted", "correct password", "Access denied") without a pair still gain the
+# check CONTROL_PAIR (ok=False) after ATOMS and the issue CONTROL_PAIR_MISSING at the end through the text backstop. All
+# three were already UNVERIFIED in version 5, so no status changes; every other case is untouched.
+V24_PAIR_CASES = ("beh_run_no_output_atom", "beh_static_only", "beh_run_wrong_input")
+
+
+def _v24_control_pair(cases):
+    for name in V24_PAIR_CASES:
+        c = cases[name]
+        assert c["status"] == "UNVERIFIED"
+        at = next(i for i, ch in enumerate(c["checks"]) if ch["code"] == "ATOMS") + 1
+        c["checks"].insert(at, {"code": "CONTROL_PAIR", "ok": False})
+        c["issues"].append({"code": "CONTROL_PAIR_MISSING", "severity": "UNVERIFY", "detail":
+                            "a validation claim (accepted/rejected, valid/invalid, correct input) needs a control_pair "
+                            "atom: one run_controlled case the program accepts and one it rejects, same build and "
+                            "inputs equal except the discriminator"})
 
 
 def test_v5_labeled_record_reverifies_identically(tmp_path):
@@ -75,7 +95,7 @@ def test_v5_labeled_record_reverifies_identically(tmp_path):
     c.ledger._append("CLAIM_ACCEPTED", rec)
     reloaded = Ledger(c.journal, c.cas, corpus.TARGET)
     again = reloaded.reverify(res.claim_id).to_record()
-    assert again["verifier_version"] == "23"
+    assert again["verifier_version"] == "24"
     assert {k: again[k] for k in ("checks", "issues", "values")} == \
         {k: res.claim["verification"][k] for k in ("checks", "issues", "values")}
 
@@ -156,7 +176,8 @@ class Env:
                        exit_code=0, parameters={"argv": [], "stdin": stdin})
 
     def claim(self, text, ev_ids, atoms=(), kind="observation", req="SUPPORTED", values=None, polarity="present"):
-        return self.ledger.add_claim(text, kind, polarity, ev_ids, atoms, req, values=values)
+        return self.ledger.add_claim(text, kind, polarity, ev_ids, atoms, req, values=values,
+                                     behavior_class=("ordinary" if kind in ("behavior", "runtime_behavior") else None))   # verifier 24
 
 
 @pytest.fixture
@@ -224,7 +245,7 @@ def test_derivation_supports_observation_value(env):
                   [e], [atom], values=[{"value": "abcde-2026-xyz", "derived": True}])
     assert r.status is ClaimStatus.SUPPORTED, r.issues
     v = r.claim["verification"]
-    assert {"code": "DERIVATIONS", "ok": True} in v["checks"] and v["verifier_version"] == "23"
+    assert {"code": "DERIVATIONS", "ok": True} in v["checks"] and v["verifier_version"] == "24"
     assert {"value": "abcde-2026-xyz", "derived": True, "source": "declared", "supported": True,
             "support": "derivation"} in v["values"]
 

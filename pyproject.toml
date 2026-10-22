@@ -3,10 +3,11 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "redharness"
+name = "red-harness-core"
 version = "0.1.0"
 description = "Red Harness: a defensive, evidence-bound reverse-engineering analysis harness"
 readme = "README.md"
+authors = [{name = "LiebertDev"}]
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
@@ -17,7 +18,10 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Topic :: Security",
     "Topic :: Software Development :: Disassemblers",
@@ -26,7 +30,7 @@ classifiers = [
 dependencies = ["mcp==1.30.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "jsonschema>=4.20"]
 # `emulate` tool (docs/design/emulation.md): the Unicorn CPU emulator from PyPI, pinned. Optional: without it the tool
 # answers EMULATOR_MISSING. Not bundled or redistributed by the harness (licence note in the design doc).
 emulate = ["unicorn==2.1.4"]
@@ -39,6 +43,8 @@ emulate = ["unicorn==2.1.4"]
 Homepage = "https://github.com/LiebertDev/red-harness"
 Source = "https://github.com/LiebertDev/red-harness"
 Issues = "https://github.com/LiebertDev/red-harness/issues"
+Changelog = "https://github.com/LiebertDev/red-harness/blob/main/CHANGELOG.md"
+Security = "https://github.com/LiebertDev/red-harness/blob/main/SECURITY.md"
 
 [project.scripts]
 rh = "redharness.cli:main"

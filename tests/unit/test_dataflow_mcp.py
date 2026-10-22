@@ -211,7 +211,9 @@ def test_except_block_outside_the_engine_function_is_decoded_and_analysed(tmp_pa
                                 untrusted_content=True)
 
     target = tmp_path / "t.dll"
-    target.write_bytes(seh_pe())
+    # only the constant-filter __except row: with the second (__finally) row of the default table the function would be
+    # correctly unmodelled since revision 8 and nothing here would be definite
+    target.write_bytes(seh_pe(rows=((0x1010, 0x1020, 1, 0x1030),)))
     hub = Hub(Config.load(tmp_path / "data"), E())
     hub.target_open(str(target), str(make_manifest(tmp_path / "scope.json", target)))
     kw = {"address": "0x140001032", "location": "ebx", "detail": "full"}

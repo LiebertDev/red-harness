@@ -31,9 +31,9 @@ from ...core.journal import atomic_write_bytes, canonical, sha256_hex
 from ...core.lock import JobLock, LockError
 from ...core.proc import RunResult, run_bounded
 from ...core.result import Status
-from .._common import HEAVY, call_args_from_doc, disassembly_from_doc
-from ..base import (DecompileInfo, Disassembly, Engine, EngineInfo, EngineResult, FunctionInfo, Page, StringInfo,
-                    TargetInfo, XrefInfo)
+from .._common import HEAVY, bodies_from_doc, call_args_from_doc, disassembly_from_doc
+from ..base import (DecompileInfo, Disassembly, Engine, EngineInfo, EngineResult, FunctionBodies, FunctionInfo, Page,
+                    StringInfo, TargetInfo, XrefInfo, split_error)
 
 ENV_IDA_DIR = "RH_IDA_DIR"
 ENV_IDA_PYTHON = "RH_IDA_PYTHON"
@@ -193,6 +193,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _fail(status: Status, detail: str, t0: float, **kw) -> EngineResult:
+    kw.setdefault("code", split_error(detail)[0])
     return EngineResult(status, None, detail, duration_s=time.monotonic() - t0, **kw)
 
 
@@ -577,6 +578,18 @@ class IdaEngine(Engine):
         if out is None:
             return _fail(Status.ERROR, f"call_args result inconsistent: {bad}", t0)
         return EngineResult(Status.OK, out, "", cached, time.monotonic() - t0, True)
+
+    def disassemble_functions(self, sha256: str, *, first: int = 0,
+                              max_insns: int = 60_000) -> EngineResult[FunctionBodies]:
+        t0 = time.monotonic()
+        args = {"first": max(0, int(first)), "max_insns": max(1, min(int(max_insns), 200_000))}
+        doc, err, cached = self._query(sha256, "disasm_funcs", args, t0)
+        if err is not None:
+            return err
+        bodies, bad = bodies_from_doc(doc)
+        if bodies is None:
+            return _fail(Status.ERROR, f"disassemble_functions result inconsistent: {bad}", t0)
+        return EngineResult(Status.OK, bodies, "", cached, time.monotonic() - t0, True)
 
     def disassemble(self, sha256: str, address: int, *, count: int = 200,
                     whole_function: bool = False) -> EngineResult[Disassembly]:

@@ -19,7 +19,7 @@ not legal advice, and the upstream licence always controls.
 ### Unicorn (CPU emulator)
 
 - **Used for:** the `emulate` tool (bounded emulation of target code in a restricted host process). Off by default.
-- **Bundled:** no. **Obtained:** `rh deps install emulate`, or `pip install "redharness[emulate]"`. Both install the
+- **Bundled:** no. **Obtained:** `rh deps install emulate`, or `pip install "red-harness-core[emulate]"`. Both install the
   pinned release `unicorn==2.1.4` from PyPI.
 - **Licence:** the Unicorn engine is licensed upstream under **GPL-2.0**
   ([licenses/unicorn-2.1.4-COPYING.txt](licenses/unicorn-2.1.4-COPYING.txt)). The PyPI metadata of the Python package

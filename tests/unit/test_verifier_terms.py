@@ -234,7 +234,7 @@ def test_over_claim_is_downgraded_and_names_the_terms(tmp_path):
     assert r.status is ClaimStatus.UNVERIFIED
     assert [i["detail"] for i in r.issues if i["code"] == "TERM_NOT_IN_EVIDENCE"] == ["FNV-1a", "hashes", "invertible"]
     assert {"code": "TERMS_IN_EVIDENCE", "ok": False} in r.claim["verification"]["checks"]
-    assert r.claim["verification"]["verifier_version"] == "23"
+    assert r.claim["verification"]["verifier_version"] == "24"
 
 
 def test_rephrased_claim_with_interpretation_is_supported_and_interpretation_is_not_verified(tmp_path):

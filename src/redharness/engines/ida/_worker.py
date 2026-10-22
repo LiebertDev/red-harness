@@ -28,10 +28,10 @@ def resolve_function(fn):
     if isinstance(fn, str):
         ea = ida_name.get_name_ea(ida_idaapi.BADADDR, fn)
         if ea == ida_idaapi.BADADDR:
-            raise LookupError("name could not be resolved: %s" % fn)
+            raise LookupError("NAME_NOT_RESOLVED: name could not be resolved: %s" % fn)
     f = ida_funcs.get_func(ea)
     if f is None:
-        raise LookupError("no function at address: 0x%x" % ea)
+        raise LookupError("NO_FUNCTION_AT_ADDRESS: no function at address: 0x%x" % ea)
     return f
 
 
@@ -282,7 +282,7 @@ def op_disassemble(req):
         if req.get("whole_function"):
             f = ida_funcs.get_func(start)
             if f is None:
-                raise LookupError("no function at address: 0x%x" % start)
+                raise LookupError("NO_FUNCTION_AT_ADDRESS: no function at address: 0x%x" % start)
             fn_addr, fn_name = f.start_ea, idc.get_func_name(f.start_ea)
             eas = sorted(set(idautils.FuncItems(f.start_ea)))
             eas = [e for e in eas if ida_bytes.is_code(ida_bytes.get_flags(e))]
@@ -307,24 +307,73 @@ def op_disassemble(req):
                 complete = False
                 stop = "COUNT: %d instructions" % count
             total = len(eas)
-        out = []
-        for ea in eas:
-            insn = ida_ua.insn_t()
-            ln = ida_ua.decode_insn(insn, ea)
-            if ln <= 0:
-                raise RuntimeError("DECODE_FAILED: 0x%x" % ea)
-            ops = []
-            for n in range(8):
-                if insn.ops[n].type == ida_ua.o_void:
-                    break
-                ops.append(_operand(insn, n, ea, ptr))
-            raw = ida_bytes.get_bytes(ea, ln) or b""
-            line = idc.generate_disasm_line(ea, 0) or ""
-            line = re.sub(r"\s+", " ", line.split(";")[0]).strip()
-            mnem = (ida_ua.print_insn_mnem(ea) or "").lower()
-            out.append({"a": ea, "s": ln, "b": raw.hex(), "m": mnem, "t": line, "o": ops})
+        out = [_insn_row(ea, ptr) for ea in eas]
         return {"insns": out, "function_address": fn_addr, "function_name": fn_name, "total": total,
                 "full": complete, "stop_reason": stop, "counts": {"insns": len(out)}}
+    finally:
+        idapro.close_database(False)
+
+
+def _insn_row(ea, ptr):
+    """One instruction -> common-contract row (see InsnInfo in engines/base.py)."""
+    import re
+    import ida_bytes
+    import ida_ua
+    import idc
+    insn = ida_ua.insn_t()
+    ln = ida_ua.decode_insn(insn, ea)
+    if ln <= 0:
+        raise RuntimeError("DECODE_FAILED: 0x%x" % ea)
+    ops = []
+    for n in range(8):
+        if insn.ops[n].type == ida_ua.o_void:
+            break
+        ops.append(_operand(insn, n, ea, ptr))
+    raw = ida_bytes.get_bytes(ea, ln) or b""
+    line = idc.generate_disasm_line(ea, 0) or ""
+    line = re.sub(r"\s+", " ", line.split(";")[0]).strip()
+    mnem = (ida_ua.print_insn_mnem(ea) or "").lower()
+    return {"a": ea, "s": ln, "b": raw.hex(), "m": mnem, "t": line, "o": ops}
+
+
+def op_disasm_funcs(req):
+    """The whole-function instruction lists of many functions in ONE run (build comparison). Functions in address
+    order (the order of the exported function list) from index `first`; a chunk ends at the first function boundary
+    after `max_insns` instructions and `next_index` says where the next chunk starts."""
+    import idapro
+    rc = idapro.open_database(req["target"], False)
+    if rc != 0:
+        raise RuntimeError("open_database rc=%s" % rc)
+    try:
+        import ida_bytes
+        import ida_funcs
+        import ida_ida
+        import idautils
+        import idc
+        ptr = 8 if ida_ida.inf_is_64bit() else 4
+        first = int(req.get("first", 0))
+        max_insns = int(req.get("max_insns", 60000))
+        per_function = 20000
+        starts = sorted(idautils.Functions())
+        out, used, idx = [], 0, first
+        while idx < len(starts):
+            if out and used >= max_insns:
+                break
+            ea = starts[idx]
+            f = ida_funcs.get_func(ea)
+            eas = sorted(set(idautils.FuncItems(f.start_ea)))
+            eas = [e for e in eas if ida_bytes.is_code(ida_bytes.get_flags(e))]
+            kept = eas[:per_function]
+            rows = [_insn_row(e, ptr) for e in kept]
+            full = len(kept) == len(eas)
+            out.append({"function_address": f.start_ea, "function_name": idc.get_func_name(f.start_ea),
+                        "size": f.end_ea - f.start_ea, "insns": rows, "total": len(eas), "full": full,
+                        "stop_reason": "" if full else "COUNT: returned %d of %d instructions" % (len(kept), len(eas)),
+                        "counts": {"insns": len(rows)}})
+            used += len(rows)
+            idx += 1
+        return {"functions": out, "function_total": len(starts), "first": first,
+                "next_index": idx if idx < len(starts) else None, "counts": {"functions": len(out)}}
     finally:
         idapro.close_database(False)
 
@@ -373,7 +422,7 @@ def op_callargs(req):
         ptr = 8 if ida_ida.inf_is_64bit() else 4
         f = ida_funcs.get_func(int(req["address"]))
         if f is None:
-            raise LookupError("no function at address: 0x%x" % int(req["address"]))
+            raise LookupError("NO_FUNCTION_AT_ADDRESS: no function at address: 0x%x" % int(req["address"]))
         out = []
         for ea in sorted(set(idautils.FuncItems(f.start_ea))):
             if not ida_bytes.is_code(ida_bytes.get_flags(ea)):
@@ -391,7 +440,7 @@ def op_callargs(req):
 
 
 OPS = {"probe": op_probe, "analyze": op_analyze, "decompile": op_decompile, "xrefs": op_xrefs,
-       "disassemble": op_disassemble, "callargs": op_callargs}
+       "disassemble": op_disassemble, "callargs": op_callargs, "disasm_funcs": op_disasm_funcs}
 
 
 def main():

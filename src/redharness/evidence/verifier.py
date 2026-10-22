@@ -75,6 +75,15 @@ Rules (docs/design/evidence-schema.md section 4):
   `assumes=A1/A2` and clobbered bytes' `last=0x..` hold only conditionally. A value, 0x literal, constant atom or quote
   backed ONLY by such lines leaves the claim UNVERIFIED (`VALUE_ONLY_CONDITIONAL` / `QUOTE_ONLY_CONDITIONAL`) unless it
   is also backed unconditionally (another line, or another cited evidence item).
+- `control_pair` atom (version 24, control_pair.py): contrasting complete `run_controlled` cases of ONE build (inputs
+  equal except a named discriminator), each side bound to its own observed outcome (stdout/stderr quote or exit code),
+  the outcomes differing; `asserts` names the side the claim is about and the claim must name that side's input (and
+  not the other side's). Every behavior claim declares `behavior_class` ("acceptance_validation" | "ordinary"; missing:
+  UNVERIFIED `BEHAVIOR_CLASS_MISSING`). A validation claim (acceptance_validation, kind `bypass_poc`, or an "ordinary"
+  claim whose text reads like a verdict: backstop) without a valid pair is UNVERIFIED (`CONTROL_PAIR_MISSING`); a
+  malformed or mismatched pair or binding is REJECTED (`CONTROL_PAIR_INVALID`); an incomplete run, contrast-free
+  outcomes or disagreeing repeats are UNVERIFIED (`CONTROL_PAIR_INCOMPLETE`, `_SAME_OUTCOME`, `_UNSTABLE`). `fix_pair`
+  (two builds) stays separate.
 Status is the verifier's decision, not the agent's. If the PROVEN conditions are not met and the SUPPORTED conditions
 are, SUPPORTED is granted and the downgrade is stated in `issues` (not silent).
 """
@@ -95,12 +104,21 @@ from .model import (C_INT_SUFFIX, COMPUTE_AUTHORITY, DYNAMIC_AUTHORITY, EMULATIO
                     location_contains_any_space, long_hex_literals, normalize_address, REGION_VIEW_AUTHORITY)
 from . import compute as compute_ev
 from . import emulation as emulation_ev
+from . import control_pair as control_pair_ev
 from . import region_view as region_view_ev
 from .derivation import DerivationError, evaluate as evaluate_derivation, result_matches
 from .kinds import is_behavior
 from .terms import extract_terms, normalize_hay, term_backed
 from .values import MAX_NUMBER_DEC_DIGITS, MAX_NUMBER_HEX_DIGITS, claim_number, effective_values, numeric, value_class
 
+# 24: `control_pair` atom and the acceptance-validation rule (control_pair.py, docs/design/evidence-schema.md section
+#    4.17). Every behavior claim (not bypass_poc / fix_verification) declares `behavior_class`; missing -> UNVERIFIED
+#    `BEHAVIOR_CLASS_MISSING` (check `BEHAVIOR_CLASS`, written only then). A validation claim (acceptance_validation,
+#    `bypass_poc`, or validation wording outside quoted output as a backstop) needs a valid control pair bound to the
+#    input the claim names: without one it is UNVERIFIED (`CONTROL_PAIR_MISSING`), even when a single run would have
+#    made it PROVEN in 23. The check `CONTROL_PAIR` is written only for such claims or when the atom is present.
+#    Observation and fix claims verify bit-for-bit as in 23. Recorded 23 statuses stay as recorded until re-verified
+#    (report_build re-verifies every claim; a v23 behavior claim then lacks behavior_class).
 # 23: conditional slice lines (docs/design/evidence-schema.md section 4.16). In `dataflow_slice` evidence a line is
 #    CONDITIONAL when it is a `candidate ... NOT definite` line (last writes that may have been overwritten), carries
 #    `assumes=A1`/`assumes=A2` (holds only under that assumption), or shows a clobbered byte's `last=0x..`. A value, a
@@ -177,7 +195,7 @@ from .values import MAX_NUMBER_DEC_DIGITS, MAX_NUMBER_HEX_DIGITS, claim_number, 
 # 6: suffixed/IDA number forms + the `derivation` atom. Claims without these forms and atom (version 5 and earlier)
 #    give a bit-for-bit identical result in `checks`/`issues`/`values` (golden tests in tests/unit/test_verifier_v6.py).
 # 5: api_sequence atom (claims produced with 4 carry no atom and give the same result)
-VERIFIER_VERSION = "23"
+VERIFIER_VERSION = "24"
 MIN_QUOTE_LEN = 4
 POINT_LOCATIONS = frozenset({"address", "file-offset"})  # exact addresses; the other kinds are spans
 VALUE_ONLY_CONDITIONAL = "VALUE_ONLY_CONDITIONAL"
@@ -553,8 +571,20 @@ def verify_claim(claim: Mapping[str, Any], evidence: Mapping[str, Mapping[str, A
     exit_unknown: list[dict] = []  # exit_code: the run recorded no exit code / is not complete (UNVERIFIED, not a reject)
     n_exit = 0
     exit_allowed: set[int] = set()  # numbers a verified exit_code atom may back, in an exit-code phrase of the text only
+    pair_unknown: list[dict] = []   # control_pair: missing / incomplete / same outcome / unstable (UNVERIFIED, not a reject)
+    n_pair = 0
     for i, atom in enumerate(claim.get("atoms") or []):
         typ = atom.get("type")
+        if typ == control_pair_ev.ATOM:   # carries its own evidence ids (both sides), like fix_pair
+            n_pair += 1
+            claim_vals = {str(v["value"]) for v in effective_values(claim.get("text") or "", claim.get("values") or [])}
+            res = control_pair_ev.check(atom, recs, raws, set(_complete_replays(recs, strengths, allowed_isolations)),
+                                        target_sha256, kind, claim_vals, claim.get("text") or "")
+            if res is not None and res[0] == "REJECT":
+                reject(res[1], f"atom[{i}]: {res[2]}")
+            elif res is not None:
+                pair_unknown.append({"code": res[1], "severity": "UNVERIFY", "detail": f"atom[{i}]: {res[2]}"})
+            continue
         if typ == "fix_pair":  # carries its own evidence ids (original + fixed), like derivation leaves
             n_fix += 1
             res = _check_fix_pair(atom, recs, raws, strengths, allowed_isolations, target_sha256, fixed_sha256, kind)
@@ -657,12 +687,25 @@ def verify_claim(claim: Mapping[str, Any], evidence: Mapping[str, Mapping[str, A
                                  "ADDRESS_NOT_IN_LOCATIONS", "CONSTANT_UNRESOLVABLE",
                                  "CONSTANT_NOT_IN_RAW", "ATOM_EVIDENCE_NOT_LISTED",
                                  "ATOM_TYPE_UNKNOWN", *_API_SEQ_REJECTS, *DERIVATION_REJECTS, *_FIX_REJECTS,
-                                 *EXIT_CODE_REJECTS)
+                                 *EXIT_CODE_REJECTS, control_pair_ev.INVALID)
                          for c in [i["code"] for i in issues]))
     if n_seq:  # added only when there is an atom: the `checks` list of atom-less (version 4) claims does not change
         check("API_SEQUENCE", not seq_unknown and not any(i["code"] in _API_SEQ_REJECTS for i in issues))
     if n_exit:  # added only when there is an atom: the `checks` list of exit-code-less (version 16) claims does not change
         check("EXIT_CODE", not exit_unknown and not any(i["code"] in EXIT_CODE_REJECTS for i in issues))
+    pair_needed = control_pair_ev.needs_pair(kind, claim.get("text") or "", claim.get("behavior_class"))
+    if pair_needed and not n_pair:
+        pair_unknown.append({"code": control_pair_ev.MISSING, "severity": "UNVERIFY", "detail":
+                             "a validation claim (accepted/rejected, valid/invalid, correct input) needs a control_pair "
+                             "atom: one run_controlled case the program accepts and one it rejects, same build and "
+                             "inputs equal except the discriminator"})
+    if n_pair or pair_needed:   # added only for validation claims / pair atoms: other claims keep the version 23 checks
+        check("CONTROL_PAIR", not pair_unknown and control_pair_ev.INVALID not in [i["code"] for i in issues])
+    if control_pair_ev.class_missing(kind, claim.get("behavior_class")):   # structural: no word list decides it
+        pair_unknown.append({"code": control_pair_ev.CLASS_MISSING, "severity": "UNVERIFY", "detail":
+                             "a behavior claim declares behavior_class: 'acceptance_validation' (an input is accepted "
+                             "or rejected, a key is valid, a password correct; needs a control_pair) or 'ordinary'"})
+        check("BEHAVIOR_CLASS", False)
     if n_deriv:  # same principle: the `checks` list of derivation-less (version 5) claims does not change
         check("DERIVATIONS", not any(i["code"] in DERIVATION_REJECTS for i in issues))
     if fixed_sha256:   # a fixed-build run is valid only as the fixed side of a fix_pair; nothing else may lean on it
@@ -763,7 +806,9 @@ def verify_claim(claim: Mapping[str, Any], evidence: Mapping[str, Mapping[str, A
         issues += fix_unknown
     if exit_unknown:
         issues += exit_unknown
-    if unbacked or bad_terms or exec_why or seq_unknown or fix_unknown or exit_unknown or cond_issues:
+    if pair_unknown:
+        issues += pair_unknown
+    if unbacked or bad_terms or exec_why or seq_unknown or fix_unknown or exit_unknown or cond_issues or pair_unknown:
         return Verdict(ClaimStatus.UNVERIFIED, checks, issues, _public(checked))
 
     # SUPPORTED conditions met
@@ -1035,7 +1080,8 @@ def _proven_blockers(kind: str, polarity: str, recs: Mapping[str, Mapping[str, A
     good_isolated |= paired  # the output of a paired dynamic observation also counts as "observed output"
     literals = hex_literals(text)[0]
     observed = any(a.get("type") in ("quote", "constant", "api_sequence", "exit_code") and a.get("evidence_id") in good_isolated
-                   for a in atoms or []) or any(a.get("type") == "fix_pair" for a in atoms or []) or any(
+                   for a in atoms or []) or any(a.get("type") in ("fix_pair", control_pair_ev.ATOM)
+                                                for a in atoms or []) or any(
         v["supported"] and any(e in good_isolated for e in v.get("_raw_hits", ())) for v in checked or []) or any(
         n in nums[e][0] for e in good_isolated for n in literals if nums and e in nums)
     if good_isolated and not observed:

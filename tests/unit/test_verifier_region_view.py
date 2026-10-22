@@ -66,7 +66,7 @@ def test_a_view_with_its_observation_backs_an_observation_claim_but_not_proven(e
     parent = observation(env)
     view = view_record(env, parent)
     ok = claim(env, [parent, view], view)
-    assert ok.status.value == "SUPPORTED" and ok.claim["verification"]["verifier_version"] == "23"
+    assert ok.status.value == "SUPPORTED" and ok.claim["verification"]["verifier_version"] == "24"
     proven = claim(env, [parent, view], view, req="PROVEN")
     assert proven.status.value == "SUPPORTED" and "PROVEN_REGION_VIEW" in codes(proven)
 
@@ -158,4 +158,4 @@ def test_hex_rows_and_instruction_bytes_of_a_view_are_not_numbers(env):
 def test_claims_without_a_view_verify_as_before(env):
     ev = env.dyn()
     res = env.claim([ev])
-    assert res.claim["verification"]["verifier_version"] == "23" and not any(c.startswith("REGION") for c in codes(res))
+    assert res.claim["verification"]["verifier_version"] == "24" and not any(c.startswith("REGION") for c in codes(res))

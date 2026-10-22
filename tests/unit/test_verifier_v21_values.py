@@ -152,4 +152,4 @@ def test_derivation_value_is_not_collapsed(c):
 
 
 def test_version_is_current():
-    assert V.VERIFIER_VERSION == "23"
+    assert V.VERIFIER_VERSION == "24"

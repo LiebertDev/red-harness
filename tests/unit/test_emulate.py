@@ -339,7 +339,7 @@ def test_emulation_becomes_reproducible_evidence_and_supports_only_observations(
                             values=["kernel32.dll"])
         assert obs["status"] == "SUPPORTED", obs
         ver = hub._s.ledger.state["claims"][obs["claim_id"]]["verification"]
-        assert {"code": "EMULATION", "ok": True} in ver["checks"] and ver["verifier_version"] == "23"
+        assert {"code": "EMULATION", "ok": True} in ver["checks"] and ver["verifier_version"] == "24"
         assert [v.get("support") for v in ver["values"]] == ["emulation"]
 
         beh = hub.claim_add(text="The program accepts kernel32.dll as the correct password",

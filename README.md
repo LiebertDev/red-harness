@@ -12,16 +12,26 @@ not by a value appearing in code. Whatever was not examined is reported as unkno
 Design notes are in `docs/design/`, the tool surface is in `docs/usage-mcp.md` and `docs/tool-design.md`, and the
 privacy rules for tracked files are in `docs/privacy-guard.md`. Third-party attributions: `NOTICE`; optional third-party components and their licences: `THIRD_PARTY_NOTICES.md`.
 
+## How is this different
+Tool-wrapper MCP servers give an agent reverse-engineering tools and pass the tool output through; nothing checks what the
+agent then says about the binary. Red Harness adds that check:
+- **Every claim is verified against recorded evidence.** A claim cites evidence ids, quotes and addresses. A deterministic
+  verifier (no model) re-checks each one against the evidence ledger and rejects or downgrades what the evidence does not
+  support. Every status and reason it can give is listed in [`docs/verifier-messages.md`](https://github.com/LiebertDev/red-harness/blob/main/docs/verifier-messages.md).
+- **Behavior is proven only by a run.** "This input is accepted" is never read off the code: it needs a controlled run of the
+  target, and static evidence alone leaves such a claim unverified.
+- **Targets run in Windows Sandbox.** Native execution of the target happens only there (network off, output records
+  authenticated), and only when the scope manifest allows it.
+- **Unexamined is unknown.** What was not looked at is reported as an unknown with its coverage, never as "clean".
+
 ## Quickstart in 5 minutes
-Red Harness is not on PyPI yet, so install from a checkout. Verified with Python 3.12 on Windows 10, building a wheel and
-installing it with pipx (the command runs from the installed package, not from the source tree):
+Install the `red-harness-core` package (the command it installs is `rh`; Python 3.12 on Windows):
 ```
-python -m pip install build
-python -m build --wheel
-pipx install dist\redharness-0.1.0-py3-none-any.whl     # from a checkout without a wheel: pipx install .
+pipx install red-harness-core
 rh deps list                       # is Ghidra found? if not: rh deps show ghidra; it needs a JDK 21
 rh quickstart C:\Windows\System32\notepad.exe
 ```
+From a checkout instead: `pipx install .` (or build a wheel with `python -m build --wheel` and install the file from `dist`).
 No model and no API key needed. `rh quickstart` checks the prerequisites, writes a scope manifest for the file (use a file you
 own or are authorized to analyse), opens it with Ghidra (else IDA), runs a small static pass through the same code path as the
 MCP tools, records two example claims that quote real evidence, builds the report and prints where it is, a short summary and
@@ -50,8 +60,8 @@ Summary
 Report: <DATA_ROOT>\jobs\job_da5807bb0997cc6b\report\report-8d4209bf00e1cef1.md
 Total time: 142s
 ```
-The generated report is in [docs/examples/notepad-quickstart-report.md](docs/examples/notepad-quickstart-report.md); each claim
-cites evidence ids and quotes, and the coverage section lists what was not examined. [docs/examples/README.md](docs/examples/README.md)
+The generated report is in [`docs/examples/notepad-quickstart-report.md`](https://github.com/LiebertDev/red-harness/blob/main/docs/examples/notepad-quickstart-report.md); each claim
+cites evidence ids and quotes, and the coverage section lists what was not examined. [`docs/examples/README.md`](https://github.com/LiebertDev/red-harness/blob/main/docs/examples/README.md)
 explains each section.
 ## Use from your agent
 One command registers the MCP server (the absolute path of the installed `rh`, with the engine it found) in the AI coding
@@ -84,6 +94,7 @@ is the same in both; Pro adds capabilities behind the same tools and a few extra
 | Ghidra and IDA engines | yes | yes |
 | `run_controlled` and `compute` in Windows Sandbox | yes | yes |
 | Protection diagnosis (including vendor attribution) | yes | yes |
+| Check inventory (candidate protection / licensing checks in `target_open`) | yes | yes |
 | Dynamic observation (`run_controlled(observe=...)`: API trace, executable-memory digests) | no | yes |
 | Job bundle export and import (`rh export`, `rh import`) | no | yes |
 | Vendor audit pack (driver facts in `target_open`, driver/service/bundle/workspace triage scripts) | no | yes |
@@ -94,7 +105,7 @@ is the same in both; Pro adds capabilities behind the same tools and a few extra
 In the Core build the Pro-only entry points answer in a fixed way: `run_controlled` with `observe` returns
 `DYNAMIC_BACKEND_UNAVAILABLE` ("premium feature not included in this build"), the Pro CLI commands print a premium notice and
 exit with status 2, and the driver facts in `target_open` are `{"available": false, "note": "premium feature not included in this build"}`.
-To ask about Pro: contact: see repository profile.
+To ask about Pro: open a thread in [GitHub Discussions](https://github.com/LiebertDev/red-harness/discussions).
 
 ## Requirements
 - **Windows 10 or 11, 64-bit** (developed and tested on Windows 10 Pro). The server, the engines and every static tool run
@@ -141,10 +152,11 @@ error answer to the client's `initialize` request; there is no silent fallback t
 
 **IDA.** IDA 9.x with a licence that includes `idalib` (IDA's headless library): the Pro editions. IDA Home and Classroom are listed by Hex-Rays as shipping idalib since 9.4; not yet tested by us. The Python package `idapro` that
 talks to it is deliberately not a dependency of this project (its publisher on PyPI is unverified); install it from the wheel in
-your IDA installation into the same virtual environment as `redharness`:
+your IDA installation into the same environment as `red-harness-core`:
 ```
 .venv\Scripts\pip install "<IDA>\idalib\python\idapro-0.0.9-py3-none-any.whl"
 ```
+(With a `pipx` install: `pipx inject red-harness-core "<IDA>\idalib\python\idapro-0.0.9-py3-none-any.whl"`.)
 `<IDA>` is for example `C:\Program Files\IDA Professional 9.4`. Use the exact file name you find in that folder (`dir "<IDA>\idalib\python"`);
 pip does not accept a `*` wildcard there. Do not run `py-activate-idalib.py`. The IDA folder is found automatically under
 `%ProgramFiles%\IDA Professional*` or from `RH_IDA_DIR` / `IDADIR`. The engine runs IDA in a separate Python process; if that

@@ -75,7 +75,8 @@ class Env:
 
     def claim(self, ev_ids, text=CLAIM, kind="behavior", polarity="present", req="SUPPORTED", atoms=None):
         atoms = [{"type": "quote", "evidence_id": ev_ids[0], "text": QUOTE}] if atoms is None else atoms
-        return self.ledger.add_claim(text, kind, polarity, ev_ids, atoms, req)
+        return self.ledger.add_claim(text, kind, polarity, ev_ids, atoms, req,
+                                     behavior_class=("ordinary" if kind in ("behavior", "runtime_behavior") else None))   # verifier 24
 
 
 @pytest.fixture
@@ -310,7 +311,7 @@ def test_dynamic_plus_matching_run_outcome_is_proven(env):
     d, r_ = env.dyn(), env.replay()
     res = env.claim([d, r_], req="PROVEN")
     assert res.status is ClaimStatus.PROVEN, res.issues
-    assert res.claim["verification"]["verifier_version"] == "23"
+    assert res.claim["verification"]["verifier_version"] == "24"
     # the same combination also becomes PROVEN as a behavior claim when SUPPORTED is requested (like the existing execution rule)
     assert env.claim([d, r_], req="SUPPORTED").status is ClaimStatus.PROVEN
 
@@ -484,7 +485,7 @@ def seq_claim(env, ev_ids, calls=None, req="SUPPORTED", text=SEQ_TEXT, **kw):
 
 def test_verifier_version_is_9():
     from redharness.evidence.verifier import VERIFIER_VERSION
-    assert VERIFIER_VERSION == "23"
+    assert VERIFIER_VERSION == "24"
 
 
 def test_api_sequence_exact_match_with_repeats_is_supported(env):
@@ -494,7 +495,7 @@ def test_api_sequence_exact_match_with_repeats_is_supported(env):
     r = seq_claim(env, [d], names, module="kernel32.dll")
     assert r.status is ClaimStatus.SUPPORTED, r.issues
     assert {"code": "API_SEQUENCE", "ok": True} in r.claim["verification"]["checks"]
-    assert r.claim["verification"]["verifier_version"] == "23"
+    assert r.claim["verification"]["verifier_version"] == "24"
 
 
 def test_api_sequence_dynamic_alone_is_capped_at_supported(env):
@@ -671,7 +672,7 @@ def test_v4_records_without_api_sequence_atoms_verify_identically(env):
         old = _as_v4(env, res)                                      # record labeled version 4
         assert old.status is status and _body(old) == golden
         assert "API_SEQUENCE" not in [c["code"] for c in old.checks]
-    assert res.claim["verification"]["verifier_version"] == "23"
+    assert res.claim["verification"]["verifier_version"] == "24"
 
 
 def test_unknown_atom_types_still_fail_and_quote_atoms_unchanged(env):

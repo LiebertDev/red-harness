@@ -89,6 +89,11 @@ elif mode == "noresult":  # script compile/run error: exit 0, no result file (re
     sys.exit(0)
 elif mode == "errdoc":
     write({"ok": False, "op": op, "nonce": nonce, "error": "RuntimeException: intentional", "complete": True})
+elif mode in ("nofunc", "noname", "decomp_failed"):  # the stable engine error codes (RHQuery.java wording)
+    msg = {"nofunc": "IllegalArgumentException: NO_FUNCTION_AT_ADDRESS: no function at address: 0x401000",
+           "noname": "IllegalArgumentException: NAME_NOT_RESOLVED: could not resolve name: nosuch",
+           "decomp_failed": "RuntimeException: DECOMPILE_FAILED: low-level error"}[mode]
+    write({"ok": False, "op": op, "nonce": nonce, "error": msg, "complete": True})
 elif mode == "decomp_timeout":
     write({"ok": False, "op": op, "nonce": nonce, "error": "RuntimeException: DECOMPILE_TIMEOUT: 120 s exceeded",
            "complete": True})

@@ -42,6 +42,12 @@ if op != "probe":
     elif mode == "importerr":
         write(req["result_path"], {"ok": False, "error": "ImportError: idapro missing"})
         sys.exit(1)
+    elif mode in ("nofunc", "noname", "decomp_failed") and op != "analyze":  # the stable engine error codes
+        write(req["result_path"], {"ok": False, "error": {
+            "nofunc": "LookupError: NO_FUNCTION_AT_ADDRESS: no function at address: 0x401000",
+            "noname": "LookupError: NAME_NOT_RESOLVED: name could not be resolved: nosuch",
+            "decomp_failed": "RuntimeError: DECOMPILE_FAILED: empty result"}[mode]})
+        sys.exit(1)
 
 if op == "probe":
     if mode == "importerr":

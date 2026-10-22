@@ -321,4 +321,4 @@ def test_old_kinds_keep_their_record_shape_and_verdict_in_version_11(ph):
     # a record verified by version 10 is re-verified by 11 with the same checks/issues/values
     h._s.ledger.state["claims"][r["claim_id"]]["verification"]["verifier_version"] = "11"
     again = h._s.ledger.reverify(r["claim_id"]).to_record()
-    assert again["verifier_version"] == "23" and {k: again[k] for k in body} == body
+    assert again["verifier_version"] == "24" and {k: again[k] for k in body} == body

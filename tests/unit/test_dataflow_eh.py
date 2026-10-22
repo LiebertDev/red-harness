@@ -1,17 +1,24 @@
-"""Exception handlers the slicer cannot model (analysis/dataflow/eh.py, slicer revision 5): a catch funclet that is not in
+"""Exception handlers the slicer cannot model (analysis/dataflow/eh.py, slicer revision 8): a catch funclet that is not in
 the parent's decoded stream can write a frame slot and resume anywhere, so such a function reports no definite value.
+The same holds for the two funclet kinds of a `C_SCOPE_TABLE`: an `__except` row with a filter function and a `__finally`
+row, while a pure constant-filter `__except` table stays modelled.
 
 Synthetic instruction streams in both operand dialects (IDA / Ghidra) plus a synthetic x64 PE whose unwind data is the
-known answer for the handler classification.
+known answer for the handler classification. The x86 prolog signatures are checked against synthetic bytes and, when the
+committed fixture is present, against the real statically linked helpers in tests/fixtures/eh/build/eh_cases_x86.exe.
 """
 from __future__ import annotations
 
 import struct
+from pathlib import Path
 
 import pytest
 
 from redharness.analysis.dataflow import SLICER_REV, UnwindData, slice_function
-from redharness.analysis.dataflow.eh import x86_markers
+from redharness.analysis.dataflow.eh import (MAX_PROLOG_BYTES, PROLOG_SIGNATURES, match_prolog, prolog_at,
+                                            x86_markers)
+from redharness.analysis.dataflow.image import PeImageView
+from redharness.analysis.dataflow.seh import scope_edges
 from redharness.analysis.imports_view import iat_slot_names
 from redharness.analysis.pe_dirs import scan_imports_image
 from redharness.analysis.pe_image import parse_pe
@@ -124,7 +131,7 @@ def test_frame_address_in_a_scratch_register_is_dropped_and_escapes():
 
 
 def test_slicer_revision_and_modelled_scope_tables_are_unchanged():
-    assert SLICER_REV == 6
+    assert SLICER_REV == 8
     from .test_dataflow_slice import SEH, _Edge
     r = run(SEH, 0x14000101A, bits=64, operand=0, exc_edges=[_Edge(0x140001004, 0x140001013, 0x140001015)])
     assert "eh=unmodelled" not in r.text and WHY not in r.text and r.complete
@@ -141,6 +148,81 @@ def test_slicer_revision_and_modelled_scope_tables_are_unchanged():
 def test_x86_marker_texts(text, hit):
     ins = InsnInfo(0x401000, 1, "90", "mov", (), text)
     assert bool(x86_markers([ins])) is hit
+
+
+# ---------------------------------------------------------------- x86 prolog byte signatures
+# Bytes of the helpers in tests/fixtures/eh/build/eh_cases_x86.exe (dumpbin /disasm of 0x401213 / 0x401250).
+EH_PROLOG3 = bytes.fromhex("50 64 FF 35 00 00 00 00 8D 44 24 0C 2B 64 24 0C 53 56 57 89 28 8B E8")
+SEH_PROLOG4 = bytes.fromhex("68 95 12 40 00 64 FF 35 00 00 00 00 8B 44 24 10 89 6C 24 10 8D 6C 24 10 "
+                            "2B E0 53 56 57")
+EH_PROLOG3_VA, SEH_PROLOG4_VA = 0x401213, 0x401250
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "eh" / "build" / "eh_cases_x86.exe"
+
+
+def call(sym, target, address=0x401135):
+    op = OperandInfo("near", sym or f"loc_{target:x}", value=target, sym=sym)
+    return InsnInfo(address, 5, "e8" + "00" * 4, "call", (op,), f"call {sym or f'loc_{target:x}'}")
+
+
+def test_prolog_signatures_match_their_real_bytes():
+    assert match_prolog(EH_PROLOG3) == "__EH_prolog3"
+    assert match_prolog(SEH_PROLOG4) == "__SEH_prolog4"
+    assert match_prolog(EH_PROLOG3 + b"\x90") == "__EH_prolog3"          # trailing bytes are not part of the signature
+    assert all(len(sig) <= MAX_PROLOG_BYTES for _, sig in PROLOG_SIGNATURES)
+
+
+def test_prolog_signatures_wildcard_relocated_operands():
+    # the SEH helper's `push <handler>` immediate is relocated: any value matches
+    assert match_prolog(SEH_PROLOG4[:1] + bytes.fromhex("ef be ad de") + SEH_PROLOG4[5:]) == "__SEH_prolog4"
+    # the EH helper has no relocated operand in its signature: a changed byte is a different function
+    assert match_prolog(EH_PROLOG3[:1] + b"\x00" + EH_PROLOG3[2:]) is None
+    # the wildcard covers only the relocatable operand, not the fixed `64 FF 35` (push fs:[0])
+    assert match_prolog(SEH_PROLOG4[:5] + b"\x90" + SEH_PROLOG4[6:]) is None
+
+
+def test_prolog_signatures_reject_short_or_other_bytes():
+    assert match_prolog(b"") is None
+    assert match_prolog(EH_PROLOG3[:-1]) is None
+    assert match_prolog(b"\x55\x8b\xec\x83\xec\x10\x53\x56\x57") is None        # an ordinary frame prolog
+    assert match_prolog(bytes(MAX_PROLOG_BYTES)) is None
+
+
+@pytest.mark.skipif(not FIXTURE.exists(), reason="tests/fixtures/eh/build/eh_cases_x86.exe is not built")
+def test_real_x86_prolog_helpers_are_recognised_and_mark_the_caller():
+    raw = FIXTURE.read_bytes()
+    view = PeImageView(parse_pe(lambda o, n: raw[o:o + n], len(raw)), lambda o, n: raw[o:o + n])
+    # addresses located with dumpbin /disasm (see the signature comment in eh.py); from the committed fixture
+    assert prolog_at(view, EH_PROLOG3_VA) == "__EH_prolog3"
+    assert prolog_at(view, SEH_PROLOG4_VA) == "__SEH_prolog4"
+    # a different real function in the same image is not a helper
+    assert prolog_at(view, 0x4010CD) is None                                      # eh_no_eh_control
+
+    markers = x86_markers([call("sub_401250", SEH_PROLOG4_VA)], image=view)
+    assert markers == ["x86 SEH/EH frame handler: x86 SEH prolog helper (signature __SEH_prolog4) at 0x401250 "
+                       "called at 0x401135"]
+    assert x86_markers([call("", SEH_PROLOG4_VA)], image=view) == markers          # no name at all: probed too
+    assert x86_markers([call("__SEH_prolog4", SEH_PROLOG4_VA)], image=view) != []  # named: the text marker already hits
+    # named with something else: the signature is only used for automatic/absent names
+    named = InsnInfo(0x401135, 5, "e8" + "00" * 4, "call",
+                     (OperandInfo("near", "my_helper", value=SEH_PROLOG4_VA, sym="my_helper"),), "call my_helper")
+    assert x86_markers([named], image=view) == []
+    # a direct call to the non-prolog function stays modelled
+    assert x86_markers([call("sub_4010cd", 0x4010CD)], image=view) == []
+
+
+@pytest.mark.skipif(not FIXTURE.exists(), reason="tests/fixtures/eh/build/eh_cases_x86.exe is not built")
+def test_real_x86_prolog_call_makes_the_slicer_report_unmodelled():
+    raw = FIXTURE.read_bytes()
+    view = PeImageView(parse_pe(lambda o, n: raw[o:o + n], len(raw)), lambda o, n: raw[o:o + n])
+    rows = [(0x401000, "mov", R("eax"), I(1)),
+            (0x401005, "call", N(SEH_PROLOG4_VA)),                 # the engine shows only sub_401250
+            (0x40100A, "cmp", R("eax"), I(1, 1)),
+            (0x40100D, "ret")]
+    r = run(rows, 0x40100A, image=view, operand=0)
+    assert "eh=unmodelled" in r.text and not r.complete
+    assert ("unknown: exception handler not modelled (x86 SEH/EH frame handler: x86 SEH prolog helper "
+            "(signature __SEH_prolog4) at 0x401250 called at 0x401005)") in r.text
+    assert "value=0x1 definite" not in r.text.split("read operand 0")[1].split("defs:")[0]
 
 
 # ---------------------------------------------------------------- x64 unwind data classification
@@ -184,6 +266,66 @@ def test_c_specific_handler_with_a_scope_table_is_modelled():
     rows = struct.pack("<IIII", 0x1010, 0x1020, 1, 0x1030)
     assert _unmodelled(_pe("__C_specific_handler", struct.pack("<I", 1) + rows)) == []
     assert _unmodelled(_pe("__GSHandlerCheck_SEH", struct.pack("<I", 1) + rows)) == []
+
+
+def _scope_rows(*rows):
+    """Handler data payload: Count + Count x SCOPE_TABLE_ENTRY (RVAs)."""
+    return struct.pack("<I", len(rows)) + b"".join(struct.pack("<IIII", *r) for r in rows)
+
+
+def _scope_why(handler, *rows):
+    return _unmodelled(_pe(handler, _scope_rows(*rows)))
+
+
+def test_c_scope_row_with_a_filter_funclet_is_not_modelled():
+    # __except whose filter is a function (the filter funclet runs during dispatch and sees the establisher frame)
+    why = [f"C-specific filter funclet at 0x{BASE + 0x1030:x} not modelled"]
+    assert _scope_why("__C_specific_handler", (0x1010, 0x1020, 0x1030, 0x1040)) == why
+    assert _scope_why("__GSHandlerCheck_SEH", (0x1010, 0x1020, 0x1030, 0x1040)) == why
+
+
+def test_finally_row_is_not_modelled():
+    # JumpTarget == 0: HandlerAddress is the termination-handler funclet, run during unwind
+    why = [f"__finally funclet at 0x{BASE + 0x1030:x} not modelled"]
+    assert _scope_why("__C_specific_handler", (0x1010, 0x1020, 0x1030, 0)) == why
+    assert _scope_why("__GSHandlerCheck_SEH", (0x1010, 0x1020, 0x1030, 0)) == why
+    # no handler address: the row runs no code at all
+    assert _scope_why("__C_specific_handler", (0x1010, 0x1020, 0, 0)) == []
+
+
+def test_mixed_rows_are_not_modelled_and_name_the_offending_row():
+    # a pure constant-filter __except next to a funclet row: the whole function is not modelled
+    assert _scope_why("__C_specific_handler", (0x1010, 0x1018, 1, 0x1030), (0x1018, 0x1020, 0x1034, 0x1038)) == [
+        f"C-specific filter funclet at 0x{BASE + 0x1034:x} not modelled"]
+    assert _scope_why("__C_specific_handler", (0x1010, 0x1018, 1, 0x1030), (0x1018, 0x1020, 0x1034, 0)) == [
+        f"__finally funclet at 0x{BASE + 0x1034:x} not modelled"]
+    # only constant-filter __except rows: still the modelled case of 6.3
+    assert _scope_why("__C_specific_handler", (0x1010, 0x1018, 1, 0x1030), (0x1018, 0x1020, 1, 0x1038)) == []
+
+
+FIXTURE64 = Path(__file__).resolve().parents[1] / "fixtures" / "eh" / "build" / "eh_cases_x64.exe"
+
+
+@pytest.mark.skipif(not FIXTURE64.exists(), reason="tests/fixtures/eh/build/eh_cases_x64.exe is not built")
+def test_real_x64_scope_tables_mark_filter_and_finally_funclets():
+    """The committed fixture's own scope tables (tests/fixtures/eh/ground-truth.json), read through the parser."""
+    raw = FIXTURE64.read_bytes()
+    img = parse_pe(lambda o, n: raw[o:o + n], len(raw))
+    read = lambda o, n: raw[o:o + n]   # noqa: E731
+    ud = UnwindData(img, read)
+    # eh_seh_try_except: one __except row, out-of-line filter at 0x140001f67 (calls eh_seh_filter)
+    assert ud.unmodelled([0x1400011DD]) == ["C-specific filter funclet at 0x140001f67 not modelled"]
+    # eh_seh_try_finally: one UHANDLER row, JumpTarget 0, finally funclet at 0x140001f7d
+    assert ud.unmodelled([0x140001213]) == ["__finally funclet at 0x140001f7d not modelled"]
+    # eh_nested_handler: two rows, both with out-of-line filters; the first row is named
+    assert ud.unmodelled([0x140001133]) == ["C-specific filter funclet at 0x140001f3b not modelled"]
+    # the no-EH control stays modelled
+    assert ud.unmodelled([0x140001166]) == []
+    # the edges themselves are kept: an __except block is still a real in-function CFG edge
+    got = {(e.try_begin, e.target, e.filter) for e in scope_edges(img, read)}
+    assert (0x1400011BC, 0x1400011C3, 0x140001F67) in got
+    assert (0x1400010FC, 0x140001103, 0x140001F3B) in got
+    assert (0x1400010FC, 0x140001119, 0x140001F51) in got
 
 
 def test_unreadable_c_scope_table_is_not_modelled():

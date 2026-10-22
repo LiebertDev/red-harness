@@ -53,7 +53,7 @@ REGISTRY: tuple[Component, ...] = (
                      "upstream text (link below) and, if you REDISTRIBUTE an environment that contains it, follow it.",
         license_url="https://github.com/unicorn-engine/unicorn/blob/2.1.4/COPYING",
         upstream_url="https://www.unicorn-engine.org/",
-        obtain="`rh deps install emulate` (or `pip install \"redharness[emulate]\"`): installs the pinned PyPI release.",
+        obtain="`rh deps install emulate` (or `pip install \"red-harness-core[emulate]\"`): installs the pinned PyPI release.",
         pip_package="unicorn", pip_spec="unicorn==2.1.4", extra="emulate"),
     Component(
         id="capstone", name="Capstone disassembler (Python package `capstone`)", kind="pip", aliases=("disasm",),

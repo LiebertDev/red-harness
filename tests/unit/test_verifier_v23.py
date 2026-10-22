@@ -54,7 +54,7 @@ def _claim(hub, text, evs, **kw):
 
 
 def test_version_and_issue_code():
-    assert VERIFIER_VERSION == "23" and VALUE_ONLY_CONDITIONAL in VALUE_ISSUE_CODES
+    assert VERIFIER_VERSION == "24" and VALUE_ONLY_CONDITIONAL in VALUE_ISSUE_CODES
 
 
 def test_conditional_lines_are_blanked_only_in_slice_evidence():

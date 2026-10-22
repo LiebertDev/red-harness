@@ -72,5 +72,5 @@ def test_declared_value_equal_to_the_context_backed_code_is_the_same_occurrence(
     ev = run_ev(env, code=NTSTATUS)
     res = env.ledger.add_claim("With `token_a` the program ends with exit code 0xC0000005.", "behavior", "present", [ev],
                                [atom(ev, NTSTATUS)], "PROVEN",
-                               values=[{"value": "token_a", "derived": True}, {"value": "0xC0000005", "derived": False}])
+                               values=[{"value": "token_a", "derived": True}, {"value": "0xC0000005", "derived": False}], behavior_class="ordinary")
     assert res.status is ClaimStatus.PROVEN, res.issues

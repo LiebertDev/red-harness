@@ -36,22 +36,24 @@ from typing import Any, Mapping
 
 from ..analysis.pe_image import READ_MAX, PeError, PeImage, normalize_views, parse_pe, read_range
 from ..analysis import dataflow, section_notes
+from ..analysis.build_diff import FuncPrint, Pair, diff_builds, fingerprint, pair_lines
+from .. import __version__
 from ..config import Config
 from ..core.cas import Cas
 from ..core.journal import Journal, JournalCorrupt, atomic_write_bytes, canonical, sha256_hex
 from ..core.lock import JobLock, LockError
 from ..core.result import Status
-from ..engines.base import Engine
+from ..engines.base import NAME_NOT_RESOLVED, NO_FUNCTION_AT_ADDRESS, OUT_OF_IMAGE, Engine, split_error
 from ..core.premium import NOT_INCLUDED, is_missing
 from ..evidence.ledger import Ledger
 from ..evidence.kinds import CLAIM_KINDS, is_behavior
 from ..evidence.model import (POLARITIES, AddressError, build_evidence, is_hypothesis,
                               normalize_address, normalize_text, wrap_untrusted)
-from ..evidence.verifier import BEHAVIOR_ISSUE_CODE, TERM_ISSUE_CODE, VALUE_ISSUE_CODES, VERIFIER_VERSION
+from ..evidence.verifier import TERM_ISSUE_CODE, VERIFIER_VERSION
 from ..jobs.provenance import imported_status_cap
 from ..jobs.stepcache import StepCache
-from . import kernel_tool, protection_tool
-from .effects import TOOL_EFFECTS, VIRTUAL_EFFECTS, EffectDenied, check_permission, virtual_entry
+from . import availability, check_tool, engines_tool, kernel_tool, protection_tool
+from .effects import TOOL_EFFECTS
 from ..analysis.imports_view import format_import_line, iat_slot_names, import_symbols
 from ..analysis.string_enc import encoding_tag
 from ..dynamic.backend import ObservationRequest
@@ -59,7 +61,7 @@ from ..dynamic.ingest import ingest_observation
 from ..dynamic.lines import lines_for, nonzero_extent, output_text
 from ..dynamic.model import CHANNELS, MemoryEvent, ObservationError, RunIdentity, load_observation
 from ..dynamic.backend import BackendUnavailable
-from ..report.render import render_report
+from ..report.render import build_report_doc, hypothesis_class, render_json, render_markdown
 from ..sandbox import RunCase, build_run_evidence
 from ..sandbox import run_controlled as sandbox_run
 from ..sandbox.backend import SandboxBackend
@@ -80,6 +82,10 @@ ENGINE_DECOMPILE_MAX = 200_000
 STRING_LINE_MAX = 300
 IMPORTS_PAGE_MAX = 1000    # imports: max symbols per call (the reply is also size-capped)
 REPORT_INLINE_MAX = 30_000
+DIFF_CHUNK_INSNS = 60_000     # compare=fixed: instructions per bulk engine run
+DIFF_MAX_FUNCTIONS = 20_000    # compare=fixed: more functions or instructions than this in a build is refused
+DIFF_MAX_INSNS = 2_000_000
+REPORT_FORMATS = ("markdown", "json", "both")   # report_build(format=...): what is returned inline (both files are always written)
 SUMMARY_MAX = 100          # max evidence/claims in the target_open summary
 RUN_STREAM_REPLY_MAX = 4_000   # output shown per case in the run_controlled reply (the whole of it is in the evidence blob)
 RUN_TIMEOUT_DEFAULT_S = 10.0
@@ -127,9 +133,9 @@ class ToolFailure(Exception):
 
 
 class _EngineFailure(Exception):
-    def __init__(self, status: Status, detail: str):
+    def __init__(self, status: Status, detail: str, code: str = ""):
         super().__init__(f"{status.value}: {detail}")
-        self.status, self.detail = status, detail
+        self.status, self.detail, self.code = status, detail, code
 
 
 @dataclass
@@ -151,6 +157,8 @@ class _Session:
     kernel: tuple[str, ...] = ()   # why the job is kernel_mode (driver / native image); empty = user-mode
     fixed_sha: str | None = None   # SHA-256 of the vendor's fixed build when its file was given to target_open
     imported: dict = field(default_factory=dict)   # provenance of a job that came from an imported bundle (empty = native job)
+    decompiler: bool = True   # the engine can decompile this target (availability: decompile)
+    fixed_path: str | None = None   # the fixed build file given to target_open (functions_list compare=fixed opens it in the engine)
 
 
 IMPORTED_STATEMENT = "imported bundle: authenticity not established"
@@ -302,20 +310,27 @@ ISSUE_HINTS = {
     "EXIT_CODE_RUN_NOT_COMPLETE": "that run was truncated or its session did not end cleanly; run it again",
     "EXIT_CODE_MALFORMED": "atom: {type:'exit_code', evidence_id:<run ev_>, code:<integer>}; present claims only; "
                            "write a negative NTSTATUS code in the text as 0x... (e.g. 0xC0000005)",
+    "BEHAVIOR_CLASS_MISSING": "a behavior claim needs behavior_class: 'acceptance_validation' (an input is accepted or "
+                              "rejected, a key valid, a password correct; needs a control_pair atom) or 'ordinary' "
+                              "(prints, exits with, writes...); resend with it",
+    "CONTROL_PAIR_MISSING": "a validation claim (accepted/rejected, valid/invalid, correct input) needs a contrast: run "
+                            "an input the program accepts AND one it rejects (same argv/stdin except one item) with "
+                            "run_controlled, then add {type:'control_pair', asserts:'accepted', discriminator:{source:"
+                            "'stdin', index:0}, accepted:{evidence_id, outcome:{type:'quote', quote}}, rejected:"
+                            "{evidence_id, outcome:{..}}} and name the asserted side's input in the claim",
+    "CONTROL_PAIR_INVALID": "control_pair: both sides are run_controlled ev_ ids of this target cited in evidence_ids, "
+                            "inputs equal except the discriminator (stdin line index / argv index), each outcome a "
+                            "quote of its own case's output or its exit code ({type:'exit_code', code:N}); the claim "
+                            "names the input of the side `asserts` names (and not the other side's input), its verdict "
+                            "words match that side",
+    "CONTROL_PAIR_INCOMPLETE": "a run of the pair timed out, was truncated or its session did not end cleanly; run it "
+                               "again",
+    "CONTROL_PAIR_SAME_OUTCOME": "the accepted and rejected outcomes do not contrast (one also appears on the other "
+                                 "side); quote the text that differs between the two outputs, or use the exit codes",
+    "CONTROL_PAIR_UNSTABLE": "the same input gave different outcomes across runs: the target is not deterministic for "
+                             "this input; report the observations, do not claim a stable verdict",
     "FIX_BUILD_EVIDENCE_NEEDS_PAIR":"evidence of the fixed build is used only inside a fix_pair atom (kind='fix_verification')",
 }
-
-
-def hypothesis_class(h: dict) -> str:
-    """Disjoint class of a hypothesis (in priority order): without evidence, value not in evidence, behavior needs execution, other."""
-    if not h.get("evidence_ids"):
-        return "without_evidence"
-    codes = {i.get("code") for i in (h.get("verification") or {}).get("issues", [])}
-    if codes & VALUE_ISSUE_CODES:
-        return "value_not_in_evidence"
-    if BEHAVIOR_ISSUE_CODE in codes:
-        return "behavior_needs_execution"
-    return "other"
 
 
 VALUE_REASONS = {"VALUE_NOT_IN_EVIDENCE": "not found in the cited evidence output",
@@ -445,13 +460,15 @@ def open_interrupted(events: list[dict]) -> list[dict]:
 
 class Hub:
     def __init__(self, config: Config, engine: Engine, sandbox_backend: SandboxBackend | None = None,
-                 system_root: str | None = None, dynamic_backend: Any = None):
+                 system_root: str | None = None, dynamic_backend: Any = None, second_engine: Engine | None = None):
         self.system_root = system_root  # source of the VC++ DLLs (None: the host's SystemRoot); a fake root in tests
         self.effects = TOOL_EFFECTS   # can be replaced in tests; the permission decision is derived from this table
+        self._prints: dict[tuple[str, str], list[FuncPrint]] = {}   # (build SHA, engine) -> function fingerprints (compare=fixed)
         self._seh_edges: dict[str, tuple] = {}   # target SHA -> x64 scope-table exception edges (dataflow_slice)
         self._unwind: dict[str, dataflow.UnwindData] = {}   # target SHA -> x64 unwind table (dataflow_slice)
         self.config = config
         self.engine = engine
+        self._second = second_engine   # functions_list engines='both': the other engine (None: built on first use, IDA <-> Ghidra)
         self.file_strings_time_budget_s: float | None = None  # None: analysis.file_strings.TIME_BUDGET_S (tests lower it)
         self.sandbox_backend = sandbox_backend  # None: real Windows Sandbox (a fake backend in tests)
         self.dynamic_backend = dynamic_backend  # None: rhtrace; a fake backend in tests
@@ -495,6 +512,7 @@ class Hub:
             except Exception as e:  # noqa: BLE001
                 self._log(tool, args, ok=False, code="INTERNAL", error=repr(e)[:500], call_id=call_id)
                 raise ToolFailure("INTERNAL", repr(e)) from e
+            self._add_hint(tool, res)
             extra = {"evidence_ids": res["evidence_ids"]} if res.get("evidence_ids") else {}
             if res.get("observation_errors"):
                 extra["observation_errors"] = res["observation_errors"]
@@ -503,21 +521,25 @@ class Hub:
             return res
 
     def _check_effects(self, tool: str, args: Mapping[str, Any] | None = None) -> None:
-        """Effect table <-> scope manifest. Without a session only table membership is checked (the tool then gives NO_TARGET).
-        A call whose effect depends on an argument (run_controlled + observe) is also checked against its virtual row."""
-        if tool not in self.effects:
-            raise ToolFailure("TOOL_NOT_IN_EFFECT_TABLE", f"tool {tool!r} has no entry in the effect table; refused")
-        if self._s is not None and tool == "run_controlled":
-            kernel_tool.deny(self._s, "run_controlled (with or without observe)")   # before the manifest: no scope can allow it
-        if self._s is not None:
-            try:
-                check_permission(tool, self._s.manifest, self.effects)
-                v = virtual_entry(tool, args)
-                if v is not None:
-                    check_permission(v, self._s.manifest, {**self.effects, **VIRTUAL_EFFECTS})
-            except EffectDenied as e:
-                raise ToolFailure(e.code, e.message + (" Plain run_controlled (without observe) still works."
-                                                       if virtual_entry(tool, args) else "")) from e
+        """Effect table <-> scope manifest, plus the build / host / engine facts a call depends on (availability.py: the
+        same decision builds the availability report, so the two cannot disagree). Without a session only table
+        membership is checked (the tool then gives NO_TARGET). A call whose effect depends on an argument
+        (run_controlled + observe) is also checked against its virtual row."""
+        b = availability.blocker(self, tool, args)
+        if b is not None:
+            raise ToolFailure(b.code, b.message)
+
+    def _add_hint(self, tool: str, res: Any) -> None:
+        """Routing hint (`next`) on a successful reply: harness guidance, added after the evidence is recorded so it is
+        never part of it. A hint failure never fails the tool."""
+        if not isinstance(res, dict) or res.get("status") not in ("OK", "PARTIAL"):
+            return
+        try:
+            h = availability.hint(self, tool)
+        except Exception:  # noqa: BLE001
+            return
+        if h:
+            res["next"] = h
 
     def close(self) -> None:
         with self._mu:
@@ -602,7 +624,8 @@ class Hub:
             sess = _Session(man, sha, job_id, jd, str(target_path), lock, journal, cas, ledger,
                             StepCache(journal, jd / "steps"), f"{self.engine.name}:{info.version}",
                             res.data.arch or None, res.data.image_base, kernel=kernel, fixed_sha=fixed_sha,
-                            imported=imported)
+                            fixed_path=str(fixed_target_path) if fixed_sha else None,
+                            imported=imported, decompiler=bool(res.data.decompiler))
             journal.append("TARGET_OPENED", {
                 "target_sha256": sha, "scope": man.to_summary(), "statement_sha256": sha256_hex(
                     man.statement.encode("utf-8")), "engine": self.engine.name, "engine_version": info.version,
@@ -628,8 +651,9 @@ class Hub:
             "scope": man.to_summary(),
             **({"fixed_build": {
                 "sha256": man.fixed_target_sha256, "bound": bool(fixed_sha),
-                "note": ("run_controlled(target='fixed') runs it; static tools stay on the original. A fix claim "
-                         "(kind='fix_verification' + fix_pair atom) needs the same input run on BOTH builds."
+                "note": ("run_controlled(target='fixed') runs it; static tools stay on the original, except "
+                         "functions_list(compare='fixed'), which compares the two builds function by function. A fix "
+                         "claim (kind='fix_verification' + fix_pair atom) needs the same input run on BOTH builds."
                          if fixed_sha else "declared in the manifest but its file was not given to target_open "
                                            "(fixed_target_path): target='fixed' is unavailable")}}
                if man.fixed_target_sha256 else {}),
@@ -649,6 +673,7 @@ class Hub:
                             **({"superseded": True} if c["claim_id"] in st.get("superseded", {}) else {})}
                            for c in list(st["claims"].values())[-SUMMARY_MAX:]],
             },
+            "tools": availability.report(self),
             "note": "Evidence ids and claims above come from the job journal; re-use them instead of re-running tools.",
             **({"provenance": _provenance_info(imported)} if imported else {}),
             **({"resume": self._resume_summary(sess, repair)} if resumed else {}),
@@ -712,8 +737,10 @@ class Hub:
         return out
 
     # ------------------------------------------------------------------ engine step + evidence
-    def _engine_tool(self, tool: str, args: dict, run, *, confidence: str = "observed") -> tuple[dict, dict, bool]:
-        """Runs through the step cache and writes the evidence. (evidence, step output, step_from_cache)."""
+    def _engine_tool(self, tool: str, args: dict, run, *, confidence: str = "observed",
+                     engine_version: str | None = None) -> tuple[dict, dict, bool]:
+        """Runs through the step cache and writes the evidence. (evidence, step output, step_from_cache).
+        `engine_version` ("name:version") overrides the job engine's in the step key (functions_list engines='both')."""
         s = self._need()
 
         def fn() -> dict:
@@ -723,9 +750,10 @@ class Hub:
             return out
 
         try:
-            oc = s.steps.run(tool, args, s.sha, fn, tool_version=TOOL_VERSION, engine_version=s.engine_version)
+            oc = s.steps.run(tool, args, s.sha, fn, tool_version=TOOL_VERSION,
+                             engine_version=engine_version or s.engine_version)
         except _EngineFailure as e:
-            raise ToolFailure(e.status.value, e.detail) from e
+            raise self._engine_tool_failure(s, tool, args, e) from e
         out = oc.result
         ev = build_evidence(
             s.cas, subject_sha256=s.sha, tool=tool, operation=tool, raw=out["raw"].encode("utf-8"),
@@ -742,7 +770,31 @@ class Hub:
     @staticmethod
     def _ok_or_raise(r) -> None:
         if r.status not in (Status.OK, Status.PARTIAL) or r.data is None:
-            raise _EngineFailure(r.status, r.detail or "engine error")
+            raise _EngineFailure(r.status, r.detail or "engine error", getattr(r, "code", "") or "")
+
+    def _engine_tool_failure(self, s: _Session, tool: str, args: dict, e: _EngineFailure) -> ToolFailure:
+        """The tool error of an engine failure: one of the stable ENGINE_ERROR_CODES when the engine gave one (the same
+        code from IDA and Ghidra), else the plain status. An address outside the PE image is OUT_OF_IMAGE, not a
+        missing function."""
+        code, msg = split_error(e.detail)
+        code = e.code or code
+        if code == NO_FUNCTION_AT_ADDRESS:
+            va = args.get("address", args.get("function"))
+            if isinstance(va, int) and not isinstance(va, bool):
+                try:
+                    img = self._pe_image(s)
+                    if not img.image_base <= va < img.image_base + img.size_of_image:
+                        return ToolFailure(OUT_OF_IMAGE, f"address 0x{va:x} is outside the image (0x{img.image_base:x}.."
+                                                         f"0x{img.image_base + img.size_of_image - 1:x}); there is no function there")
+                except ToolFailure:
+                    pass
+        if not code:
+            return ToolFailure(e.status.value, e.detail)
+        if code in (NO_FUNCTION_AT_ADDRESS, NAME_NOT_RESOLVED):
+            msg += ("; the address may be data or code the engine did not define as a function: try disassemble, or "
+                    "functions_list for the defined functions" if code == NO_FUNCTION_AT_ADDRESS else
+                    "; use functions_list to find the exact name, or pass an address")
+        return ToolFailure(code, msg)
 
     @staticmethod
     def _reply(ev: dict, out: dict, cached: bool, text: str, detail: str = "full", summary: dict | None = None,
@@ -759,12 +811,30 @@ class Hub:
         return {**base, "note": UNTRUSTED_NOTE, "content": wrap_untrusted(ev["evidence_id"], text), **extra}
 
     # ------------------------------------------------------------------ 2. functions_list
-    def functions_list(self, offset: int = 0, limit: int = 100, detail: str = "full") -> dict:
+    def functions_list(self, offset: int = 0, limit: int = 100, detail: str = "full",
+                       compare: str | None = None, engines: str | None = None) -> dict:
         detail = _detail(detail)
         offset, limit = _clamp(offset, 0, 10**9, "offset"), _clamp(limit, 1, PAGE_MAX, "limit")
+        if engines is not None:   # without it the call (its journal entry, step key and evidence) is exactly as before
+            if engines != "both":
+                raise ToolFailure("BAD_ARGUMENT", "engines must be 'both' (IDA and Ghidra, with their disagreements) or omitted")
+            if compare is not None:
+                raise ToolFailure("BAD_ARGUMENT", "engines='both' and compare='fixed' are separate views: use one")
+            self._need()
+            return engines_tool.functions_both(self, offset, limit, detail)
         args = {"offset": offset, "limit": limit}
+        if compare is not None:   # without it the call (its journal entry, step key and evidence) is exactly as before
+            if compare != "fixed":
+                raise ToolFailure("BAD_ARGUMENT", "compare must be 'fixed' (original build vs the vendor's fixed build) or omitted")
+            fs = self._need()
+            if not fs.fixed_sha or not fs.fixed_path:
+                raise ToolFailure("FIXED_BUILD_NOT_OPEN", "no fixed build is open: the scope manifest needs fixed_target_sha256 "
+                                  "and target_open needs fixed_target_path (the file with that SHA-256)")
+            args.update(compare="fixed", fixed_sha256=fs.fixed_sha)   # the fixed build's hash is part of the step key and the evidence
 
         def run(s: _Session) -> dict:
+            if compare is not None:
+                return self._compare_builds(s, offset, limit)
             r = self.engine.functions(s.sha, offset=offset, limit=limit)
             self._ok_or_raise(r)
             lines = [f"0x{f.address:x} {_line_safe(f.name)} size={f.size}\n" for f in r.data.items]
@@ -772,6 +842,66 @@ class Hub:
 
         ev, out, cached = self._engine_tool("functions_list", args, run)
         return self._reply(ev, out, cached, out["raw"], detail, _list_summary(out))
+
+    def _build_prints(self, sha: str) -> list[FuncPrint]:
+        """Fingerprints of every function of an analysed build (engine-side bulk disassembly, chunk by chunk)."""
+        key = (sha, self.engine.name)
+        if key in self._prints:
+            return self._prints[key]
+        prints: list[FuncPrint] = []
+        n_insns, first = 0, 0
+        while True:
+            r = self.engine.disassemble_functions(sha, first=first, max_insns=DIFF_CHUNK_INSNS)
+            self._ok_or_raise(r)
+            for b in r.data.items:
+                prints.append(fingerprint(b))
+                n_insns += len(b.disassembly.items)
+            if r.data.next_index is None:
+                if len(prints) != r.data.total:
+                    raise _EngineFailure(Status.ERROR, f"the engine listed {r.data.total} functions but returned "
+                                                       f"{len(prints)}")
+                break
+            if r.data.next_index <= first or not r.data.items:
+                raise _EngineFailure(Status.ERROR, "the engine made no progress in the bulk disassembly")
+            if len(prints) > DIFF_MAX_FUNCTIONS or n_insns > DIFF_MAX_INSNS:
+                raise ToolFailure("BUILD_TOO_LARGE", f"the build has more than {DIFF_MAX_FUNCTIONS} functions or "
+                                  f"{DIFF_MAX_INSNS} instructions; compare=fixed does not cover it (no partial diff is made)")
+            first = r.data.next_index
+        self._prints[key] = prints
+        return prints
+
+    def _compare_builds(self, s: _Session, offset: int, limit: int) -> dict:
+        """functions_list(compare='fixed'): the original build against the vendor's fixed build, function by function."""
+        r = self.engine.open_target(s.fixed_path)   # analysed once (cached by SHA-256 like any target); static, nothing runs
+        self._ok_or_raise(r)
+        if r.data.sha256 != s.fixed_sha:
+            raise ToolFailure("ARTIFACT_CHANGED", "the fixed build file changed after the manifest check; use the original file")
+        diff = diff_builds(self._build_prints(s.sha), self._build_prints(s.fixed_sha))
+        c = diff.counts
+        header = (f"# build comparison: original sha256={s.sha} fixed sha256={s.fixed_sha} engine={s.engine_version}\n"
+                  f"# functions: original={c['original_functions']} fixed={c['fixed_functions']} matched={c['matched']} "
+                  f"(moved={c['moved']}) changed={c['changed']} added={c['added']} removed={c['removed']}\n"
+                  "# matched = same normalized instruction stream (call, jump and data addresses normalized away); "
+                  "it is not a statement about behavior. Rows: changed, added, removed, then matched.\n")
+        kept: list[tuple[Pair, str]] = []
+        used = len(header)
+        for p in diff.pairs[offset:offset + limit]:
+            ln = pair_lines(p)
+            if used + len(ln) > RESPONSE_BUDGET and kept:
+                break
+            kept.append((p, ln))
+            used += len(ln)
+        total = len(diff.pairs)
+        reached = offset + len(kept)
+        has_more = reached < total
+        return {"status": "PARTIAL" if c["truncated_functions"] else "OK",
+                "raw": header + "".join(ln for _, ln in kept), "truncated": False,
+                "result": {"total": total, "offset": offset, "returned": len(kept),
+                           "next_offset": reached if has_more else None,
+                           "compare": {"original_sha256": s.sha, "fixed_sha256": s.fixed_sha, **c}},
+                "addresses": list(dict.fromkeys(p.original.address for p, _ in kept if p.original)),
+                "coverage": "complete" if offset == 0 and not has_more else "partial",
+                "coverage_scope": f"functions-compare:fixed:offset={offset}", "limitations": list(diff.limitations)}
 
     # ------------------------------------------------------------------ 3. decompile
     def decompile(self, function: Any, offset: int = 0, max_chars: int = 12_000, detail: str = "full") -> dict:
@@ -1642,7 +1772,7 @@ class Hub:
     def claim_add(self, text: str, evidence_ids: list[str] | None = None, atoms: list[dict] | None = None,
                   kind: str | None = None, polarity: str = "present", requested: str = "SUPPORTED",
                   values: list | None = None, supersedes: list[str] | None = None,
-                  interpretation: str | None = None) -> dict:
+                  interpretation: str | None = None, behavior_class: str | None = None) -> dict:
         s = self._need()
         if not isinstance(text, str) or not text.strip():
             raise ToolFailure("BAD_ARGUMENT", "text must not be empty")
@@ -1663,7 +1793,8 @@ class Hub:
             raise ToolFailure("BAD_ARGUMENT", "supersedes must be a list of claim_id strings")
         try:
             res = s.ledger.add_claim(text, kind, polarity, ev_ids, atoms or [], requested, values=values,
-                                     supersedes=sup, interpretation=interpretation)
+                                     supersedes=sup, interpretation=interpretation,
+                                     behavior_class=behavior_class)
         except ValueError as e:
             raise ToolFailure("INVALID_CLAIM", f"claim arguments invalid ({e}); fix them and resend") from e
         proven_note = {}
@@ -1701,16 +1832,10 @@ class Hub:
         return out
 
     # ------------------------------------------------------------------ unknown_record
-    def unknown_record(self, question: Any, reason: Any, address: Any = None,
-                       evidence_ids: Any = None, severity: str = "medium") -> dict:
+    def unknown_record(self, question: Any = None, reason: Any = None, address: Any = None,
+                       evidence_ids: Any = None, severity: str = "medium", resolves: Any = None,
+                       status: Any = None) -> dict:
         s = self._need()
-        if not isinstance(question, str) or not normalize_text(question) or len(question) > 1000:
-            raise ToolFailure("BAD_ARGUMENT", "question must be a non-empty string (<= 1000 chars)")
-        if not isinstance(reason, str) or not normalize_text(reason) or len(reason) > 1000:
-            raise ToolFailure("BAD_ARGUMENT", "reason (why you cannot answer it) must be a non-empty string (<= 1000 chars)")
-        addr = None
-        if address is not None and address != "":
-            addr = _parse_address(address.strip() if isinstance(address, str) else address, "address")
         ids = evidence_ids or []
         if not isinstance(ids, list) or not all(isinstance(e, str) for e in ids):
             raise ToolFailure("BAD_ARGUMENT", "evidence_ids must be a list of ev_ ids")
@@ -1718,6 +1843,15 @@ class Hub:
         if missing:
             raise ToolFailure("UNKNOWN_EVIDENCE_ID", "use ev_ ids returned by tools in this job; unknown: "
                               + ", ".join(m[:20] for m in missing[:5]))
+        if resolves is not None or status is not None:
+            return self._unknown_close(s, resolves, status, question, address, reason, ids)
+        if not isinstance(question, str) or not normalize_text(question) or len(question) > 1000:
+            raise ToolFailure("BAD_ARGUMENT", "question must be a non-empty string (<= 1000 chars)")
+        if not isinstance(reason, str) or not normalize_text(reason) or len(reason) > 1000:
+            raise ToolFailure("BAD_ARGUMENT", "reason (why you cannot answer it) must be a non-empty string (<= 1000 chars)")
+        addr = None
+        if address is not None and address != "":
+            addr = _parse_address(address.strip() if isinstance(address, str) else address, "address")
         try:
             rec = s.ledger.record_unknown("analysis", question, scope=f"addr:0x{addr:x}" if addr is not None else "",
                                           severity=severity, supporting_evidence_ids=ids,
@@ -1728,12 +1862,50 @@ class Hub:
         return {"status": "OK", "unknown_id": rec["unknown_id"], "unknown_status": rec["status"],
                 "severity": rec["severity"], "open_unknowns": n_open,
                 "note": "same question (and address) is recorded once; open unknowns are listed by coverage and "
-                        "in the report, and a report with open unknowns is never 'clean'"}
+                        "in the report, and a report with open unknowns is never 'clean'. Close one later with "
+                        "unknown_record(resolves=<unknown_id>, status='resolved', evidence_ids=[...]) once evidence "
+                        "answers it, or status='withdrawn' with a reason"}
+
+    def _unknown_close(self, s: _Session, resolves: Any, status: Any, question: Any, address: Any, reason: Any,
+                       ids: list[str]) -> dict:
+        """unknown_record(resolves=unknown_id, status=resolved|withdrawn): closes an earlier unknown. `resolved` cites
+        the evidence that answers it, `withdrawn` gives the reason it no longer matters. Nothing is deleted: the
+        question stays in the journal, the coverage listing and the report as closed."""
+        if not isinstance(resolves, str) or not resolves.startswith("unk_"):
+            raise ToolFailure("BAD_ARGUMENT", "resolves must be the unknown_id (unk_...) of an earlier unknown_record")
+        st = "resolved" if status is None else status
+        if st not in ("resolved", "withdrawn"):
+            raise ToolFailure("BAD_ARGUMENT", "status must be 'resolved' (answered by evidence_ids) or 'withdrawn' (with a reason)")
+        if (isinstance(question, str) and question.strip()) or (address is not None and address != ""):
+            raise ToolFailure("BAD_ARGUMENT", "when closing an unknown pass only resolves, status, evidence_ids and reason "
+                                              "(not question/address)")
+        if reason is not None and (not isinstance(reason, str) or len(reason) > 1000):
+            raise ToolFailure("BAD_ARGUMENT", "reason must be a string (<= 1000 chars)")
+        if st == "resolved" and not ids:
+            raise ToolFailure("BAD_RESOLUTION", "resolved needs evidence_ids: the ev_ ids that answer the question")
+        if st == "withdrawn" and not (isinstance(reason, str) and normalize_text(reason)):
+            raise ToolFailure("BAD_RESOLUTION", "withdrawn needs a reason: why the question no longer matters")
+        try:
+            rec = s.ledger.close_unknown(resolves, st, evidence_ids=ids, reason=reason or "")
+        except ValueError as e:
+            code = str(e)
+            msg = {"UNKNOWN_NOT_FOUND": "no unknown with this id in this job (ids come from unknown_record or coverage)",
+                   "UNKNOWN_ALREADY_CLOSED": "this unknown is already closed with a different resolution; the earlier "
+                                             "resolution stays in the ledger",
+                   "UNKNOWN_EVIDENCE_ID": "evidence_ids must be valid (not invalidated) ev_ ids of this job",
+                   }.get(code, "invalid resolution")
+            raise ToolFailure(code if code in ("UNKNOWN_NOT_FOUND", "UNKNOWN_ALREADY_CLOSED", "UNKNOWN_EVIDENCE_ID")
+                              else "BAD_RESOLUTION", msg) from e
+        n_open = sum(1 for u in s.ledger.state["unknowns"].values() if u.get("status") in OPEN_UNKNOWN)
+        return {"status": "OK", "unknown_id": rec["unknown_id"], "unknown_status": rec["status"],
+                "resolution": rec["resolution"], "severity": rec["severity"], "open_unknowns": n_open,
+                "note": "closed, not deleted: the question and this resolution stay in the journal, coverage and the "
+                        "report (resolved/withdrawn section)"}
 
     # ------------------------------------------------------------------ coverage
     def coverage(self) -> dict:
         s = self._need()
-        return {"status": "OK", **self._coverage_data(s)}
+        return {"status": "OK", **self._coverage_data(s), "tools": availability.report(self)}
 
     def _coverage_data(self, s: _Session) -> dict:
         """Coverage is derived from the ledger + journal (not from the model's own statements). Missing coverage never counts as 'clean'."""
@@ -1779,14 +1951,17 @@ class Hub:
             elif op == "xrefs" and isinstance(res.get("address"), int):
                 xr.append({"address": res["address"], "direction": res.get("direction"), "evidence_id": eid})
             elif op in ("functions_list", "strings") and isinstance(res.get("total"), int):
-                key = op + ("" if op == "functions_list" else ":" + str((e.get("parameters") or {}).get("pattern")))
+                params = e.get("parameters") or {}
+                key = (op + (":compare=" + str(params["compare"]) if params.get("compare") else "")
+                       + (":engines=" + str(params["engines"]) if params.get("engines") else "")) if op == "functions_list" \
+                    else op + ":" + str(params.get("pattern"))   # a build comparison / engine comparison is its own listing, not a page of the function list
                 li = listings.setdefault(key, {"tool": op, "pages": 0, "total": res["total"], "reached": 0})
                 li["pages"] += 1
                 li["reached"] = max(li["reached"], int(res.get("offset", 0)) + int(res.get("returned", 0)))
         incomplete = []
         for (op, _), evs in groups.items():
-            if op == protection_tool.OPERATION:
-                continue  # open-time protection diagnosis: reported in `protection`, not a code-coverage gap
+            if op in (protection_tool.OPERATION, check_tool.OPERATION):
+                continue  # open-time protection diagnosis / check inventory: reported in `protection`, not a code-coverage gap
             if any(x["capture"]["strength"] == "full" for x in evs):
                 continue  # if the same (tool, args) later gave full output, the gap is closed
             e = evs[-1]
@@ -1799,6 +1974,10 @@ class Hub:
                      "address": hexify(u.get("address"), "address"),
                      "evidence_ids": u.get("supporting_evidence_ids", [])}
                     for u in st["unknowns"].values() if u.get("status") in OPEN_UNKNOWN]
+        closed_unk = [{"unknown_id": u["unknown_id"], "question": u["question"], "severity": u["severity"],
+                       "status": u["status"], "resolution": u.get("resolution"),
+                       "address": hexify(u.get("address"), "address")}
+                      for u in st["unknowns"].values() if u.get("status") in ("resolved", "withdrawn")]
         for li in listings.values():
             li["exhausted"] = li["reached"] >= li["total"]
         dyn = [e for e in st["evidence"].values() if e.get("authority") == "dynamic-observation"]
@@ -1809,7 +1988,8 @@ class Hub:
                      "timed_out": e["capture"].get("timed_out")} for e in dyn]
         dyn_gaps = sum(1 for e in dyn if e["capture"]["strength"] != "full") + obs_errors
         prot = [e for e in st["evidence"].values() if e["operation"] == protection_tool.OPERATION]
-        n_ev = len(st["evidence"]) - len(prot)   # the automatic open-time scan is not an examination of the code
+        chk = [e for e in st["evidence"].values() if e["operation"] == check_tool.OPERATION]
+        n_ev = len(st["evidence"]) - len(prot) - len(chk)   # the automatic open-time scans are not an examination of the code
         gaps = len(incomplete) + len(failed_calls) + len(open_unk) + obs_errors
         assessment = "NOT_EXAMINED" if n_ev == 0 and not failed_calls else (
             "INCOMPLETE" if gaps else "NO_RECORDED_GAPS")
@@ -1823,6 +2003,9 @@ class Hub:
                             "diagnosis": (prot[-1].get("result") or {}).get("diagnosis"),
                             "static_coverage": (prot[-1].get("result") or {}).get("static_coverage")}
                            if prot else None),
+            "checks": ({"evidence_id": chk[-1]["evidence_id"], "state": (chk[-1].get("result") or {}).get("state"),
+                        "candidate_count": (chk[-1].get("result") or {}).get("candidate_count")}
+                       if chk else None),
             "functions_examined": [{"address": f"0x{a:x}", "via": sorted(v)} for a, v in sorted(funcs.items())][:cap_],
             "functions_examined_total": len(funcs),
             "regions_examined": [hexify(r) for r in sorted(regions, key=lambda r: r["start"])][:cap_],
@@ -1835,6 +2018,9 @@ class Hub:
             "failed_calls": failed_calls[:cap_], "failed_calls_total": len(failed_calls),
             "denied_calls": denied,
             "open_unknowns": open_unk[:cap_], "open_unknowns_total": len(open_unk),
+            "closed_unknowns": closed_unk[:cap_], "closed_unknowns_total": len(closed_unk),
+            "resolved_unknowns_total": sum(1 for u in closed_unk if u["status"] == "resolved"),
+            "withdrawn_unknowns_total": sum(1 for u in closed_unk if u["status"] == "withdrawn"),
             "dynamic": {"observations": dyn_rows[:cap_], "observations_total": len(dyn),
                         "incomplete": dyn_gaps, "observation_errors": obs_errors,
                         "note": "a dynamic observation covers ONE run of ONE input; partial/unknown channels and "
@@ -1842,7 +2028,9 @@ class Hub:
         }
 
     # ------------------------------------------------------------------ 7. report_build
-    def report_build(self) -> dict:
+    def report_build(self, format: str = "markdown") -> dict:
+        if format not in REPORT_FORMATS:
+            raise ToolFailure("BAD_ARGUMENT", f"format must be one of {', '.join(REPORT_FORMATS)}")
         s = self._need()
         try:  # the target copy is re-hashed (the CAS also verifies while reading)
             if Cas._file_sha(s.cas.path_for(s.sha)) != s.sha:
@@ -1886,26 +2074,54 @@ class Hub:
                   "hypotheses_behavior_needs_execution": hyp["behavior_needs_execution"],
                   "hypotheses_other": hyp["other"]}
         cov = self._coverage_data(s)
-        md = render_report(target_sha256=s.sha, job_id=s.job_id, findings=findings, hypotheses=hypotheses,
-                           counts=counts, evidence=st["evidence"], coverage=cov, imported=s.imported or None)
+        engine_name, _, engine_ver = s.engine_version.partition(":")
+        doc = build_report_doc(
+            target_sha256=s.sha, job_id=s.job_id, findings=findings, hypotheses=hypotheses, counts=counts,
+            evidence=st["evidence"], coverage=cov, imported=s.imported or None,
+            target={"kernel_mode": bool(s.kernel), "image_base": hexify(s.image_base, "image_base"),
+                    **({"fixed_build_sha256": s.fixed_sha} if s.fixed_sha else {})},
+            scope={"scope_sha256": sha256_hex(canonical(s.manifest.to_summary())), "basis": s.manifest.basis,
+                   "allowed_operations": list(s.manifest.allowed_operations), "expires": s.manifest.expires},
+            verifier_version=VERIFIER_VERSION,
+            tool_versions={"harness": TOOL_VERSION, "package": __version__,
+                           "engine": {"name": engine_name, "version": engine_ver}},
+            unknowns=[{**u, "address": hexify(u.get("address"), "address")} for u in st["unknowns"].values()],
+            engine_disagreement=engines_tool.report_block(st["evidence"]))
+        # ONE document, two renderings: neither file can say what the other does not
+        md = render_markdown(doc)
         data = md.encode("utf-8")
         digest = sha256_hex(data)
         path = s.job_dir / "report" / f"report-{digest[:16]}.md"
         atomic_write_bytes(path, data)
         s.cas.put(data)
+        jdata = render_json(doc)
+        jdigest = sha256_hex(jdata)
+        jpath = s.job_dir / "report" / f"report-{digest[:16]}.json"
+        atomic_write_bytes(jpath, jdata)
+        s.cas.put(jdata)
         s.journal.append("REPORT_BUILT", {
-            "report_sha256": digest, "claim_ids": [f["claim_id"] for f in findings],
+            "report_sha256": digest, "report_json_sha256": jdigest, "claim_ids": [f["claim_id"] for f in findings],
             "rejected_count": len(st["rejected"]), "open_unknown_ids": [
                 u for u, r in st["unknowns"].items() if r.get("status") == "open"],
             "verifier_version": VERIFIER_VERSION, "counts": counts,
             "coverage_assessment": cov["assessment"]})
-        inline = md if len(md) <= REPORT_INLINE_MAX else md[:REPORT_INLINE_MAX] + "\n\n[... truncated; see report_path]\n"
-        return {"status": "OK", "report_sha256": digest, "report_path": str(path), "counts": counts,
-                "coverage": {"assessment": cov["assessment"], "incomplete_calls": cov["incomplete_calls_total"],
-                             "failed_calls": cov["failed_calls_total"], "open_unknowns": cov["open_unknowns_total"]},
-                "failed_reverify": failed, "markdown": inline,
-                "markdown_truncated": len(md) > REPORT_INLINE_MAX,
-                "_meta": {"provenance": {"untrusted_content": True, "note": "quotes inside come from the target"}}}
+        reply: dict[str, Any] = {
+            "status": "OK", "report_sha256": digest, "report_path": str(path),
+            "report_json_sha256": jdigest, "report_json_path": str(jpath), "counts": counts,
+            "coverage": {"assessment": cov["assessment"], "incomplete_calls": cov["incomplete_calls_total"],
+                         "failed_calls": cov["failed_calls_total"], "open_unknowns": cov["open_unknowns_total"]},
+            "failed_reverify": failed}
+        if format in ("markdown", "both"):
+            reply["markdown"] = md if len(md) <= REPORT_INLINE_MAX else (
+                md[:REPORT_INLINE_MAX] + "\n\n[... truncated; see report_path]\n")
+            reply["markdown_truncated"] = len(md) > REPORT_INLINE_MAX
+        if format in ("json", "both"):   # JSON is never cut: too big for the reply = not inlined, read report_json_path
+            fits = len(jdata) <= REPORT_INLINE_MAX
+            reply["report_json_truncated"] = not fits
+            if fits:
+                reply["report_json"] = doc
+        reply["_meta"] = {"provenance": {"untrusted_content": True, "note": "quotes inside come from the target"}}
+        return reply
 
 
 def _insn_digest(d: Any) -> str:

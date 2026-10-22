@@ -141,12 +141,12 @@ def test_call_cut_off_mid_engine_step_is_interrupted_never_ok_and_rerun_is_idemp
     res = out["resume"]
     assert [(c["tool"], c["status"]) for c in res["interrupted"]] == [("decompile", "INTERRUPTED")]
     assert res["interrupted"][0]["args"] == {"function": VA}      # exactly what to re-issue
-    # +1 each: the open-time protection_scan step and its evidence
-    assert res["steps_finished"] == 2 and res["evidence"] == 2 and "re-issue" in res["next"]
+    # +2 each: the open-time protection_scan and check_inventory steps and their evidence
+    assert res["steps_finished"] == 3 and res["evidence"] == 3 and "re-issue" in res["next"]
     assert len(json.dumps(res)) < 2500                              # short summary
     # the interrupted call produced no evidence and is not counted as ok anywhere
     st = h2._s.ledger.state
-    assert [e["operation"] for e in st["evidence"].values()] == ["protection_scan", "functions_list"]
+    assert [e["operation"] for e in st["evidence"].values()] == ["protection_scan", "check_inventory", "functions_list"]
     assert f1["evidence_id"] in st["evidence"]
     cov = h2.coverage()
     assert cov["tools_run"].get("decompile") is None

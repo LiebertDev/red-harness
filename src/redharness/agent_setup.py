@@ -47,6 +47,11 @@ MAX_CONFIG_BYTES = 8 * 1024 * 1024
 # these contents; add the new hash here whenever skill/SKILL.md changes (a unit test enforces it).
 SHIPPED_SKILL_SHA256 = frozenset({
     "b68a401b28c409fa36a8c9bba35817dfef0edfa1bbe46e9f4b229e42b7064bcf",
+    "e09aafb13457906accbe0c408979fb29e5e45dddd84c1d4e280480cc6b65dad8",
+    "5a746d5e3849fd271ba687ece06109da610e5ea9fb285981cb9611c0e4df6931",
+    "3223f37b22e32f3f90234b20b559c5df2af5e9b892ec9d6d62065b07b3b600ab",
+    "8a3a85c951c64f839cbcd4c5261172eefafcf7c0e95155d1e77295cfb93d1e71",
+    "18035fdcb0ed3ed3a7cb6c5aa9cf148db806a442ada3b7a8ff3909cccd9fb702",   # control_pair rule (verifier 24)
 })
 # The program basenames of our own server entry (its args start with "mcp").
 OUR_COMMANDS = ("rh", "rh.exe")

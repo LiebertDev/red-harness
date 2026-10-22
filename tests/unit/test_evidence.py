@@ -45,7 +45,8 @@ class Env:
         return self.ev(**base)
 
     def claim(self, text, ev_ids, atoms=(), kind="static_fact", polarity="present", req="SUPPORTED"):
-        return self.ledger.add_claim(text, kind, polarity, ev_ids, atoms, req)
+        return self.ledger.add_claim(text, kind, polarity, ev_ids, atoms, req,
+                                     behavior_class=("ordinary" if kind in ("behavior", "runtime_behavior") else None))   # verifier 24
 
 
 @pytest.fixture
@@ -328,10 +329,23 @@ def test_inferred_only_rejected(env):
 
 # ---------- PROVEN ----------
 
+def control_pair(acc, rej, acc_quote="ACCEPTED", rej_quote="REJECTED"):
+    return {"type": "control_pair", "asserts": "accepted", "discriminator": {"source": "stdin", "index": 0},
+            "accepted": {"evidence_id": acc, "outcome": {"type": "quote", "quote": acc_quote}},
+            "rejected": {"evidence_id": rej, "outcome": {"type": "quote", "quote": rej_quote}}}
+
+
 def test_proven_positive_isolated_replay(env):
-    e = env.replay_ev(raw=b"correct key: ACCEPTED\n")
-    r = env.claim("The correct input is accepted.", [e], [{"type": "quote", "evidence_id": e, "text": "ACCEPTED"}],
-                  kind="runtime_behavior", req="PROVEN")
+    e = env.replay_ev(raw=b"correct key: ACCEPTED\n", parameters={"stdin": "k1\n"})
+    quote = [{"type": "quote", "evidence_id": e, "text": "ACCEPTED"}]
+    # version 24: a validation claim from one run alone is not PROVEN; it needs a contrasting (rejected) run
+    r = env.claim("The correct input is accepted.", [e], quote, kind="runtime_behavior", req="PROVEN")
+    assert r.status is ClaimStatus.UNVERIFIED and codes(r) == {"CONTROL_PAIR_MISSING"}
+    bad = env.replay_ev(raw=b"wrong key: REJECTED\n", exit_code=1, parameters={"stdin": "k2\n"})
+    # the pair binds the claim to the accepted side's input, which the claim names (verifier 24)
+    r = env.ledger.add_claim("The correct input `k1` is accepted.", "runtime_behavior", "present", [e, bad],
+                             quote + [control_pair(e, bad)], "PROVEN", values=[{"value": "k1", "derived": True}],
+                             behavior_class="acceptance_validation")
     assert r.status is ClaimStatus.PROVEN and not r.issues
     assert r.claim["requested"] == "PROVEN" and r.claim["verification"]["verifier_version"]
 
@@ -400,7 +414,13 @@ def test_proven_with_good_replay_plus_static_support(env):
     assert r.status is ClaimStatus.UNVERIFIED and "PROVEN_NEEDS_OBSERVED_OUTPUT" in codes(r)
     r = env.claim("The dispatch 0x104620 path produces acceptance.", [s, e], [
         {"type": "quote", "evidence_id": e, "text": "ACCEPTED"}], kind="runtime_behavior", req="PROVEN")
-    assert r.status is ClaimStatus.PROVEN
+    assert r.status is ClaimStatus.UNVERIFIED and codes(r) == {"CONTROL_PAIR_MISSING"}   # version 24: "acceptance"
+    e2 = env.replay_ev(raw=b"ACCEPTED\n", parameters={"stdin": "k1\n"})
+    bad = env.replay_ev(raw=b"REJECTED\n", exit_code=1, parameters={"stdin": "k2\n"})
+    r = env.ledger.add_claim("For `k1` the dispatch 0x104620 path produces acceptance.", "runtime_behavior", "present",
+                             [s, e2, bad], [{"type": "quote", "evidence_id": e2, "text": "ACCEPTED"}, control_pair(e2, bad)],
+                             "PROVEN", values=[{"value": "k1", "derived": True}], behavior_class="ordinary")
+    assert r.status is ClaimStatus.PROVEN, r.issues
 
 
 # ---------- journal and unknowns ----------

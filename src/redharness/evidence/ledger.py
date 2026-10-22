@@ -12,7 +12,8 @@ from typing import Any, Iterable, Mapping
 
 from ..core.cas import Cas
 from ..core.journal import Journal
-from .kinds import CLAIM_KINDS, resolve_kind
+from .control_pair import BEHAVIOR_CLASSES
+from .kinds import CLAIM_KINDS, is_behavior, resolve_kind
 from .model import (CLAIM_SCHEMA, ISOLATED, POLARITIES, ClaimStatus, build_unknown, evidence_id_ok,
                     make_claim_id, normalize_text)
 from .values import normalize_declared
@@ -52,6 +53,11 @@ def reduce_event(state: dict, ev: dict) -> dict:
         state["superseded"].setdefault(p["claim_id"], p)
     elif t == "UNKNOWN_RECORDED":
         state["unknowns"].setdefault(p["unknown_id"], p)
+    elif t == "UNKNOWN_UPDATED":  # closing an unknown: the record stays (append-only), only its status/resolution move
+        u = state["unknowns"].get(p["unknown_id"])
+        if u is not None and u.get("revision") == p.get("expected_revision"):
+            state["unknowns"][p["unknown_id"]] = {**u, "status": p["status"], "resolution": copy.deepcopy(p["resolution"]),
+                                                  "revision": u["revision"] + 1}
     return state
 
 
@@ -149,7 +155,8 @@ class Ledger:
     def add_claim(self, text: str, kind: str | None, polarity: str, evidence_ids: Iterable[str] = (),
                   atoms: Iterable[Mapping[str, Any]] = (), requested: str = "SUPPORTED", *,
                   expected_revision: int | None = None, values: Iterable[Any] | None = None,
-                  supersedes: Iterable[str] = (), interpretation: str | None = None) -> ClaimResult:
+                  supersedes: Iterable[str] = (), interpretation: str | None = None,
+                  behavior_class: str | None = None) -> ClaimResult:
         """kind: observation | behavior | bypass_poc (legacy: static_fact, runtime_behavior) or None; if None the kind is
         decided heuristically from the text, behavior if unclear (kinds.resolve_kind). A behavior claim is supported only
         by execution evidence (BEHAVIOR_NEEDS_EXECUTION).
@@ -159,7 +166,10 @@ class Ledger:
         (they stay in the ledger).
         interpretation: the model's reading of the code (algorithm names, purpose, format) that the evidence does not
         show; stored beside the claim and printed as NOT verified. It is never passed to the verifier, so the status
-        never covers it (verifier version 16, docs/design/evidence-schema.md section 4.12)."""
+        never covers it (verifier version 16, docs/design/evidence-schema.md section 4.12).
+        behavior_class: required for a behavior claim (verifier version 24, section 4.17; missing -> UNVERIFIED
+        BEHAVIOR_CLASS_MISSING): "acceptance_validation" (accepted/rejected, correct input, valid licence; needs a
+        control_pair atom) or "ordinary". Validation wording in the text makes an "ordinary" claim need a pair too."""
         interp = None
         if interpretation is not None:
             if not isinstance(interpretation, str) or len(interpretation) > MAX_INTERPRETATION:
@@ -172,6 +182,12 @@ class Ledger:
             raise ValueError("empty claim text")
         req = ClaimStatus(requested)
         kind, kind_source, kind_hit = resolve_kind(kind, text)
+        if behavior_class is not None:
+            if behavior_class not in BEHAVIOR_CLASSES:
+                raise ValueError(f"behavior_class must be one of {list(BEHAVIOR_CLASSES)} or omitted")
+            if not is_behavior(kind) or kind == "fix_verification":
+                raise ValueError("behavior_class applies to a behavior claim (kind 'behavior' or 'bypass_poc'); a fix "
+                                 "claim uses kind='fix_verification' with a fix_pair atom")
         cid = make_claim_id(text, kind, polarity, self.target_sha256)
         sup_ids = list(dict.fromkeys(supersedes or ()))
         for sid in sup_ids:
@@ -190,7 +206,7 @@ class Ledger:
         values = normalize_declared(list(values) if values is not None else None)
         verdict: Verdict = verify_claim(
             {"text": text, "kind": kind, "polarity": polarity, "requested": req.value,
-             "evidence_ids": ev_ids, "atoms": atoms, "values": values},
+             "evidence_ids": ev_ids, "atoms": atoms, "values": values, "behavior_class": behavior_class},
             self.state["evidence"], self.state["invalidated"], self.cas, self.target_sha256,
             self.allowed_isolations, self.scope_sha256, self.fixed_sha256)
         verdict = self._cap_verdict(cid, verdict)
@@ -211,6 +227,8 @@ class Ledger:
             rec["supersedes"] = sup_ids
         if interp:  # written only when given: records without it keep their version 15 shape
             rec["interpretation"] = interp
+        if behavior_class:  # written only when given: records without it keep their version 23 shape
+            rec["behavior_class"] = behavior_class
         if prev is not None and _same_claim(prev, rec):
             out = prev
         else:
@@ -238,7 +256,35 @@ class Ledger:
         self._append("UNKNOWN_RECORDED", rec)
         return rec
 
+    def close_unknown(self, unknown_id: str, status: str, *, evidence_ids: Iterable[str] = (), reason: str = "") -> dict:
+        """Closes an open unknown as `resolved` (needs evidence ids that exist and are not invalidated) or `withdrawn`
+        (needs a reason). The unknown and its history stay in the journal; closing again with the same status and
+        evidence is a no-op. ValueError(code) otherwise: UNKNOWN_NOT_FOUND, UNKNOWN_ALREADY_CLOSED, BAD_RESOLUTION,
+        UNKNOWN_EVIDENCE_ID."""
+        u = self.state["unknowns"].get(unknown_id)
+        if u is None:
+            raise ValueError("UNKNOWN_NOT_FOUND")
+        if status not in ("resolved", "withdrawn"):
+            raise ValueError("BAD_RESOLUTION")
+        ids = sorted(set(evidence_ids))
+        note = normalize_text(reason)
+        res = {"status": status, "evidence_ids": ids, **({"reason": note} if note else {})}
+        if u["status"] in ("resolved", "withdrawn"):
+            if u.get("resolution") == res:
+                return u
+            raise ValueError("UNKNOWN_ALREADY_CLOSED")
+        if status == "resolved" and not ids:
+            raise ValueError("BAD_RESOLUTION")
+        if status == "withdrawn" and not note:
+            raise ValueError("BAD_RESOLUTION")
+        if any(e not in self.state["evidence"] or e in self.state["invalidated"] for e in ids):
+            raise ValueError("UNKNOWN_EVIDENCE_ID")
+        self._append("UNKNOWN_UPDATED", {"unknown_id": unknown_id, "expected_revision": u["revision"],
+                                         "status": status, "resolution": res})
+        return self.state["unknowns"][unknown_id]
+
 
 def _same_claim(prev: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
-    keys = ("status", "requested", "evidence_ids", "atoms", "values", "verification", "interpretation")
+    keys = ("status", "requested", "evidence_ids", "atoms", "values", "verification", "interpretation",
+            "behavior_class")
     return all(prev.get(k) == new.get(k) for k in keys)

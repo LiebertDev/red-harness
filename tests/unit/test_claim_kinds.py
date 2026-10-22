@@ -7,7 +7,7 @@ from redharness.evidence.ledger import replay_state
 from redharness.evidence.model import ClaimStatus
 from redharness.core.journal import verify_file
 
-from .test_evidence import Env, codes
+from .test_evidence import Env, codes, control_pair
 from .test_run_controlled_mcp import GOOD_KEY, make_hub  # noqa: F401
 
 
@@ -83,7 +83,7 @@ def test_decoy_not_in_findings_only_in_hypotheses_via_mcp_report(tmp_path):
     h, _, _ = make_hub(tmp_path)
     d = h.decompile("0x140001250")["evidence_id"]
     # behavior claim built on a value (19) that appears in the decompile output: the old gate would have given SUPPORTED
-    r = h.claim_add("The correct key has length 19.", [d], [{"type": "quote", "evidence_id": d, "text": "!= 19"}], kind="behavior")
+    r = h.claim_add("The correct key has length 19.", [d], [{"type": "quote", "evidence_id": d, "text": "!= 19"}], kind="behavior", behavior_class="ordinary")
     assert r["status"] == "UNVERIFIED" and r["kind"] == "behavior" and r["hypothesis"] is False
     assert "BEHAVIOR_NEEDS_EXECUTION" in [i["code"] for i in r["issues"]]
     assert "run_controlled" in r["message"] and r["issues"][0]["hint"]
@@ -112,23 +112,30 @@ def test_observation_about_the_same_code_can_be_supported(env):
 def test_behavior_with_execution_evidence_is_proven(env):
     s = env.ev(raw=DECOY_RAW, locations=())
     run = env.replay_ev(raw=b"Congratulations! The pass is faster\n", parameters={"stdin": "faster\n"})
-    r = env.ledger.add_claim('The correct password is "faster".', "behavior", "present", [s, run],
-                             [{"type": "quote", "evidence_id": run, "text": "Congratulations!"}],
-                             values=[{"value": "faster", "derived": True}])
+    wrong = env.replay_ev(raw=b"Incorrect\n", exit_code=1, parameters={"stdin": "slower\n"})
+    atoms = [{"type": "quote", "evidence_id": run, "text": "Congratulations!"}]
+    r = env.ledger.add_claim('The correct password is "faster".', "behavior", "present", [s, run], atoms,
+                             values=[{"value": "faster", "derived": True}], behavior_class="ordinary")
+    assert r.status is ClaimStatus.UNVERIFIED and codes(r) == {"CONTROL_PAIR_MISSING"}   # version 24: one run is not a contrast
+    r = env.ledger.add_claim('The correct password is "faster".', "behavior", "present", [s, run, wrong],
+                             atoms + [control_pair(run, wrong, "Congratulations!", "Incorrect")],
+                             values=[{"value": "faster", "derived": True}], behavior_class="ordinary")
     assert r.status is ClaimStatus.PROVEN and not codes(r) - {"KIND_OVERRIDDEN_TO_BEHAVIOR"}
 
 
 def test_behavior_requested_supported_with_execution_is_still_proven(env):
     run = env.replay_ev(raw=b"License valid\n", parameters={"stdin": "k1\n"})
-    r = env.ledger.add_claim("Key `k1` is accepted.", None, "present", [run],
-                             [{"type": "quote", "evidence_id": run, "text": "License valid"}],
-                             values=[{"value": "k1", "derived": True}])
+    wrong = env.replay_ev(raw=b"License invalid\n", exit_code=1, parameters={"stdin": "k2\n"})
+    r = env.ledger.add_claim("Key `k1` is accepted.", None, "present", [run, wrong],
+                             [{"type": "quote", "evidence_id": run, "text": "License valid"},
+                              control_pair(run, wrong, "License valid", "License invalid")],
+                             values=[{"value": "k1", "derived": True}], behavior_class="acceptance_validation")
     assert r.status is ClaimStatus.PROVEN
 
 
 def test_wrong_run_cannot_prove_behavior_without_output_binding(env):
     run = env.replay_ev(raw=b"Incorrect\n", parameters={"stdin": "decoy-pw\n"})
-    r = env.ledger.add_claim('The correct password is "decoy-pw".', "behavior", "present", [run])
+    r = env.ledger.add_claim('The correct password is "decoy-pw".', "behavior", "present", [run], behavior_class="ordinary")
     assert r.status is ClaimStatus.UNVERIFIED and "BEHAVIOR_NEEDS_EXECUTION" in codes(r)
 
 
@@ -148,7 +155,7 @@ def test_legacy_kind_names_still_work(env):
 def test_supersedes_hides_old_claim_from_report_but_keeps_it_in_ledger(tmp_path):
     h, _, _ = make_hub(tmp_path)
     d = h.decompile("0x140001250")["evidence_id"]
-    old = h.claim_add("The correct key has length 19.", [d], [{"type": "quote", "evidence_id": d, "text": "!= 19"}], kind="behavior")
+    old = h.claim_add("The correct key has length 19.", [d], [{"type": "quote", "evidence_id": d, "text": "!= 19"}], kind="behavior", behavior_class="ordinary")
     assert old["status"] == "UNVERIFIED"
     new = h.claim_add("validate_license compares strlen(key) with 19.", [d],
                       [{"type": "quote", "evidence_id": d, "text": "strlen(key) != 19"}],
@@ -174,7 +181,7 @@ def test_supersedes_hides_old_claim_from_report_but_keeps_it_in_ledger(tmp_path)
 def test_supersedes_survives_resume(tmp_path):
     h, _, _ = make_hub(tmp_path)
     d = h.decompile("0x140001250")["evidence_id"]
-    old = h.claim_add("The correct key has length 19.", [d], [{"type": "quote", "evidence_id": d, "text": "!= 19"}], kind="behavior")
+    old = h.claim_add("The correct key has length 19.", [d], [{"type": "quote", "evidence_id": d, "text": "!= 19"}], kind="behavior", behavior_class="ordinary")
     h.claim_add("validate_license compares strlen(key) with 19.", [d],
                 [{"type": "quote", "evidence_id": d, "text": "strlen(key) != 19"}],
                 kind="observation", supersedes=[old["claim_id"]])
@@ -252,7 +259,7 @@ def test_counters_split_findings_from_hypotheses(tmp_path):
     d = h.decompile("0x140001250")["evidence_id"]
     q = [{"type": "quote", "evidence_id": d, "text": "strlen(key) != 19"}]
     h.claim_add("validate_license compares strlen(key) with 19.", [d], q, kind="observation")           # finding
-    h.claim_add("The correct key has length 19.", [d], q, kind="behavior")                                              # behavior hyp.
+    h.claim_add("The correct key has length 19.", [d], q, kind="behavior", behavior_class="ordinary")                                              # behavior hyp.
     h.claim_add("The key length is 19 and the checksum equals 4944.", [d], q, kind="observation",
                 values=[{"value": 4944, "derived": True}])                                             # value hyp.
     h.claim_add("Maybe a hidden path exists.", requested="UNVERIFIED", kind="observation")                                 # no-evidence hyp.

@@ -1,0 +1,33 @@
+name: Feature request
+description: Something Red Harness cannot do that you needed.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New tools and checks are added for a measured need, so describe what happened rather than what you would like.
+  - type: textarea
+    id: need
+    attributes:
+      label: The measured need
+      description: What you tried to find out, which tools you used, what was missing or failed, and the evidence ids or tool replies that show it.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you did instead
+      description: A workaround, another tool, or "nothing".
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Red Harness version
+      description: Output of `rh version`.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change (optional)

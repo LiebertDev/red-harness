@@ -93,7 +93,10 @@ def build(root: Path) -> dict[str, dict]:
     out = {}
     for name, (text, kind, evs, atoms, values) in cases.items():
         polarity = "absent" if name.startswith("absent") else "present"
-        res = c.ledger.add_claim(text, kind, polarity, evs, atoms, "SUPPORTED", values=values)
+        # verifier 24: a behavior claim declares its class; "ordinary" keeps the version 5 meaning (validation wording
+        # still asks for a control pair through the text backstop, see test_verifier_v6.V24_PAIR_CASES)
+        res = c.ledger.add_claim(text, kind, polarity, evs, atoms, "SUPPORTED", values=values,
+                                 behavior_class="ordinary" if kind == "behavior" else None)
         if res.claim is not None:
             v = res.claim["verification"]
             out[name] = {"status": res.status.value, "checks": v["checks"], "issues": v["issues"],

@@ -22,7 +22,7 @@ from . import x86
 from .state import (CONST, EMPTY, FRAME, NEG_INF, PTR_BYTES, PTRB, RANGE, STACK, UNINIT, UNKNOWN, State, Val, fmt_off,
                     join_state, ranges_of, tags_of, taint_state, top_state, unknown)
 
-SLICER_REV = 6   # 5: no definite value in functions with unmodelled exception handlers (C++ EH, x86 SEH, ...); 6: also when the exception directory is unreadable or truncated
+SLICER_REV = 8   # 5: no definite value in functions with unmodelled exception handlers (C++ EH, x86 SEH, ...); 6: also when the exception directory is unreadable or truncated; 7: x86 prolog helpers recognised by byte signature when the engine leaves them unnamed; 8: C-specific filter and __finally funclets are unmodelled, only constant-filter __except rows stay modelled
 # 2: spilled frame pointers, RANGE pointers, last-write candidates, cstr; 3: assumes= on writes
 # 4: exception edges from x64 scope tables, callee-writable stack arguments (A3)
 CACHE_FUNCTIONS = 2
@@ -535,8 +535,8 @@ def _assumes(srcs) -> str:
     return (" assumes=" + ",".join(sorted(t))) if t else ""
 
 
-def _eh_reasons(insns: list[InsnInfo], bits: int, given) -> tuple[str, ...]:
-    found = list(given) + (ehmod.x86_markers(insns) if bits == 32 else [])
+def _eh_reasons(insns: list[InsnInfo], bits: int, given, image=None) -> tuple[str, ...]:
+    found = list(given) + (ehmod.x86_markers(insns, image=image) if bits == 32 else [])
     return tuple(sorted(dict.fromkeys(found)))
 
 
@@ -573,7 +573,7 @@ def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, oper
     else:
         ctx = x86.Ctx(bits, image)
         ctx.call_args = dict(call_args or {})
-        ctx.eh_reasons = _eh_reasons(insns, bits, eh_unmodelled)
+        ctx.eh_reasons = _eh_reasons(insns, bits, eh_unmodelled, image)
         if ctx.eh_reasons:
             ctx.eh = frozenset([_eh_why(ctx.eh_reasons)])
         cfg = build_cfg(insns, entry, dis.complete, exc_edges)

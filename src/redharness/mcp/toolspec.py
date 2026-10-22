@@ -47,6 +47,8 @@ EFFECT_REQUIRES: Mapping[str, tuple[str, ...]] = {
 }
 
 EXPOSURES = ("always", "operation")
+MAX_FOLLOW_UPS = 4
+MAX_FOLLOW_UP_WHY = 44
 
 
 @dataclass(frozen=True)
@@ -67,11 +69,15 @@ class ToolSpec:
     operation: str = ""              # exposure "operation": the scope operation that unlocks the tool
     tier: str = "core"               # "core" (public) or "pro" (implementation stays out of the public export)
     premium_module: str = ""         # tier "pro": repo path of the implementation (a name only; never imported here)
+    impl_modules: tuple[str, ...] = ()   # tier "pro": dotted modules that must be importable for the tool to run (the
+                                         # availability report and the call share this check; names only, never imported)
     user_only: bool = False          # Studio: the user performs this step, the model never calls it
     execution_summary: str = ""      # Studio: non-empty = the tool executes something; text of the approval card
     eval_note: str = ""              # eval prompt: one-line usage note shown next to the tool name
     real_tests: tuple[str, ...] = () # real (heavy) tests that drive the tool: "tests/heavy/<file>.py::<test function>"
     no_real_test: str = ""           # OR the reason there is none (exactly one of real_tests / no_real_test)
+    follow_ups: tuple[tuple[str, str], ...] = ()   # routing hint: (tool, short purpose) suggested after a successful
+                                                   # call. Shown only for tools usable under the open scope (availability.py)
 
     @property
     def executes(self) -> bool:
@@ -94,6 +100,15 @@ def validate_specs(specs: tuple[ToolSpec, ...]) -> None:
             raise ValueError(f"tool registry: {s.name}: exposure must be one of {EXPOSURES}, got {s.exposure!r}")
         if (s.exposure == "operation") != bool(s.operation):
             raise ValueError(f"tool registry: {s.name}: exposure 'operation' needs an operation, 'always' has none")
+        if (s.tier == "pro") != bool(s.impl_modules):
+            raise ValueError(f"tool registry: {s.name}: a pro tool names the modules it needs, a core tool does not")
+        if len(s.follow_ups) > MAX_FOLLOW_UPS:
+            raise ValueError(f"tool registry: {s.name}: at most {MAX_FOLLOW_UPS} follow-ups (the hint stays terse)")
+        for tool, why in s.follow_ups:
+            if tool == s.name or tool not in {x.name for x in specs}:
+                raise ValueError(f"tool registry: {s.name}: follow-up {tool!r} is not another registered tool")
+            if not why.strip() or len(why) > MAX_FOLLOW_UP_WHY or not why.isascii():
+                raise ValueError(f"tool registry: {s.name}: follow-up {tool!r}: give a short ASCII purpose")
         if bool(s.real_tests) == bool(s.no_real_test.strip()):
             raise ValueError(f"tool registry: {s.name}: give real_tests or a no_real_test reason (exactly one)")
         for node in s.real_tests:

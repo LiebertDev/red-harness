@@ -70,10 +70,22 @@ def hub(tmp_path):
     h.close()
 
 
-def prove(h, key, ev, *, derived=True, quote="License valid", requested="PROVEN", kind="runtime_behavior"):
+def pair_atom(acc, rej, acc_quote="License valid", rej_quote="License invalid"):
+    """Verifier 24: a validation claim needs an accepted and a rejected run of the same build (control_pair)."""
+    return {"type": "control_pair", "asserts": "accepted", "discriminator": {"source": "stdin", "index": 0},
+            "accepted": {"evidence_id": acc, "outcome": {"type": "quote", "quote": acc_quote}},
+            "rejected": {"evidence_id": rej, "outcome": {"type": "quote", "quote": rej_quote}}}
+
+
+def prove(h, key, ev, *, derived=True, quote="License valid", requested="PROVEN", kind="runtime_behavior",
+          against=None):
+    """against: the ev_ of a rejected run; binds `ev` and it with a control_pair atom."""
     atoms = [{"type": "quote", "evidence_id": ev, "text": quote}] if quote else []
-    return h.claim_add(f"The license key `{key}` is accepted by the program.", [ev], atoms, kind, "present",
-                       requested, [{"value": key, "derived": derived}])
+    evs = [ev] + ([against] if against else [])
+    if against:
+        atoms.append(pair_atom(ev, against))
+    return h.claim_add(f"The license key `{key}` is accepted by the program.", evs, atoms, kind, "present",
+                       requested, [{"value": key, "derived": derived}], behavior_class="acceptance_validation")
 
 
 # ---------------------------------------------------------------- run_controlled: evidence, untrusted, refusal
@@ -182,9 +194,11 @@ def test_run_controlled_requires_open_target(tmp_path):
 # ---------------------------------------------------------------- PROVEN end to end
 def test_model_proposes_key_run_controlled_then_claim_is_proven(hub):
     h, _ = hub
-    r = h.run_controlled([{"stdin": GOOD_KEY + "\n"}])
-    ev = r["cases"][0]["evidence_id"]
-    res = prove(h, GOOD_KEY, ev)
+    r = h.run_controlled([{"stdin": GOOD_KEY + "\n"}, {"stdin": WRONG_KEY + "\n"}])
+    ev, bad = r["cases"][0]["evidence_id"], r["cases"][1]["evidence_id"]
+    one = prove(h, GOOD_KEY, ev)   # verifier 24: one accepted run is no contrast
+    assert one["status"] == "UNVERIFIED" and [i["code"] for i in one["issues"]] == ["CONTROL_PAIR_MISSING"], one
+    res = prove(h, GOOD_KEY, ev, against=bad)
     assert res["status"] == "PROVEN" and res["accepted"], res
     assert res["values_checked"][0]["supported"] is True
     assert any(_RISK_NOTE(x) for x in res["limitations"])  # the PROVEN reply carries the risk/mitigation
@@ -213,7 +227,7 @@ def test_wrong_key_cannot_become_proven(hub):
     assert c["status"] == "UNVERIFIED"
     # (5) a partial match (substring) does not count as the input
     d = h.claim_add("Key `1A2B` works.", [good], [{"type": "quote", "evidence_id": good, "text": "License valid"}],
-                    "runtime_behavior", "present", "PROVEN", [{"value": "1A2B", "derived": True}])
+                    "runtime_behavior", "present", "PROVEN", [{"value": "1A2B", "derived": True}], behavior_class="ordinary")
     assert d["status"] == "UNVERIFIED"
     rep = h.report_build()
     assert rep["counts"]["findings"] == 0
@@ -232,14 +246,14 @@ def test_proven_needs_observed_output_not_just_the_input(hub):
 
 def test_proven_static_kind_and_static_evidence_still_capped(hub):
     h, _ = hub
-    ev = h.run_controlled([{"stdin": GOOD_KEY}])["cases"][0]["evidence_id"]
+    ev, bad = (c["evidence_id"] for c in h.run_controlled([{"stdin": GOOD_KEY}, {"stdin": WRONG_KEY}])["cases"])
     # kind='static_fact' (= observation) but the text says "the key is accepted": converted to behavior, execution evidence exists
-    r0 = prove(h, GOOD_KEY, ev, kind="static_fact")
+    r0 = prove(h, GOOD_KEY, ev, kind="static_fact", against=bad)
     assert r0["status"] == "PROVEN" and r0["kind"] == "behavior" and r0["kind_source"] == "overridden"
     assert "KIND_OVERRIDDEN_TO_BEHAVIOR" in [i["code"] for i in r0["issues"]]
     d = h.decompile("0x140001250")["evidence_id"]
     r = h.claim_add("validate_license checks a 16-bit value.", [d],
-                    [{"type": "quote", "evidence_id": d, "text": "& 0xFFFF"}], "runtime_behavior", "present", "PROVEN")
+                    [{"type": "quote", "evidence_id": d, "text": "& 0xFFFF"}], "runtime_behavior", "present", "PROVEN", behavior_class="ordinary")
     assert r["status"] == "UNVERIFIED" and r["issues"][0]["code"] == "BEHAVIOR_NEEDS_EXECUTION"
     assert "PROVEN_NEEDS_CONTROLLED_REPLAY" in [i["code"] for i in r["issues"]]
     o = h.claim_add("validate_license checks a 16-bit value.", [d],
@@ -252,7 +266,9 @@ def test_value_echoed_in_run_output_is_proven_without_derived_flag(tmp_path):
         return {"stdout": b"checked key " + stdin.strip() + b": ok\n", "stderr": b"", "exit_code": 0}
     h, _, _ = make_hub(tmp_path, behavior=echo)
     ev = h.run_controlled([{"stdin": GOOD_KEY}])["cases"][0]["evidence_id"]
-    r = prove(h, GOOD_KEY, ev, derived=False, quote=None)  # the value appears in the output: no quote atom needed
+    # the value appears in the output: no quote atom needed (ordinary behavior wording: no control pair needed)
+    r = h.claim_add(f"The program prints `{GOOD_KEY}` back when given it.", [ev], [], "runtime_behavior", "present",
+                    "PROVEN", [{"value": GOOD_KEY, "derived": False}], behavior_class="ordinary")
     assert r["status"] == "PROVEN", r
     h.close()
 
@@ -369,9 +385,11 @@ def test_mcp_wire_end_to_end_proven_and_wrong_key(tmp_path):
             assert not err, r
             g, w = r["cases"]
             assert r["_meta"]["provenance"]["untrusted_content"] is True
-            _, ok = await call(s, "claim_add", text=f"Key `{GOOD_KEY}` is accepted.", evidence_ids=[g["evidence_id"]],
-                               atoms=[{"type": "quote", "evidence_id": g["evidence_id"], "text": "License valid"}],
-                               kind="runtime_behavior", requested="PROVEN",
+            _, ok = await call(s, "claim_add", text=f"Key `{GOOD_KEY}` is accepted.",
+                               evidence_ids=[g["evidence_id"], w["evidence_id"]],
+                               atoms=[{"type": "quote", "evidence_id": g["evidence_id"], "text": "License valid"},
+                                      pair_atom(g["evidence_id"], w["evidence_id"])],
+                               kind="runtime_behavior", requested="PROVEN", behavior_class="acceptance_validation",
                                values=[{"value": GOOD_KEY, "derived": True}])
             _, bad = await call(s, "claim_add", text=f"Key `{WRONG_KEY}` is accepted.", evidence_ids=[w["evidence_id"]],
                                 atoms=[{"type": "quote", "evidence_id": w["evidence_id"], "text": "License valid"}],
@@ -426,7 +444,7 @@ def test_run_controlled_missing_dll_source_is_explicit_error_not_silent_ok(tmp_p
         h.run_controlled([{"stdin": GOOD_KEY}])
     assert e.value.code == "SUPPORT_FILES_MISSING" and "msvcp140.dll" in e.value.message
     # the sandbox was not opened; no evidence was produced beyond the automatic open-time protection scan
-    assert sb.started == [] and {e["operation"] for e in h._s.ledger.state["evidence"].values()} <= {"protection_scan"}
+    assert sb.started == [] and {e["operation"] for e in h._s.ledger.state["evidence"].values()} <= {"protection_scan", "check_inventory"}
     h.close()
 
 

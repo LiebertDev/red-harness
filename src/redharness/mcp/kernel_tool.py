@@ -37,12 +37,20 @@ def detect(cas: "Cas", sha: str, file_name: str | None) -> tuple[str, ...]:
     return kernel_mode_reasons(img, file_name)
 
 
+def refusal(s: "_Session", what: str) -> str | None:
+    """The refusal message when the job is kernel_mode (None for a user-mode job). `what` names the refused action."""
+    if not s.kernel:
+        return None
+    return KERNEL_MESSAGE.format(why="; ".join(s.kernel), what=f"{what} is refused.")
+
+
 def deny(s: "_Session", what: str):
     """Raises ToolFailure(KERNEL_TARGET_NO_USERMODE_RUN) when the job is kernel_mode. `what` names the refused action."""
-    if not s.kernel:
+    msg = refusal(s, what)
+    if msg is None:
         return
     from .session import ToolFailure
-    raise ToolFailure(KERNEL_CODE, KERNEL_MESSAGE.format(why="; ".join(s.kernel), what=f"{what} is refused."))
+    raise ToolFailure(KERNEL_CODE, msg)
 
 
 def deny_compute_inputs(s: "_Session", bindings: list[dict]) -> None:

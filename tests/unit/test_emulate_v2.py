@@ -288,7 +288,7 @@ def test_range_evidence_is_reproducible_and_supports_an_observation(tmp_path):
                            evidence_ids=[r1["evidence_id"]], kind="observation", requested="SUPPORTED")
         assert ok["status"] == "SUPPORTED", ok
         ver = hub._s.ledger.state["claims"][ok["claim_id"]]["verification"]
-        assert ver["verifier_version"] == "23" and {"code": "EMULATION", "ok": True} in ver["checks"]
+        assert ver["verifier_version"] == "24" and {"code": "EMULATION", "ok": True} in ver["checks"]
         beh = hub.claim_add(text="The program computes 0x31 when it runs", evidence_ids=[r1["evidence_id"]],
                             kind="behavior", requested="PROVEN")
         assert beh["status"] != "PROVEN"

@@ -27,7 +27,8 @@ def codes(res):
 
 
 def claim(env, evs, atoms, text=TEXT, req="PROVEN", polarity="present", kind="behavior"):
-    return env.ledger.add_claim(text, kind, polarity, evs, atoms, req, values=[{"value": "token_a", "derived": True}])
+    return env.ledger.add_claim(text, kind, polarity, evs, atoms, req, values=[{"value": "token_a", "derived": True}],
+                                behavior_class=("ordinary" if kind in ("behavior", "runtime_behavior") else None))   # verifier 24
 
 
 def run_ev(env, *, code, status=Status.OK, truncated=False, raw=b"done\n", stdin="token_a\n"):
@@ -41,7 +42,7 @@ def run_ev(env, *, code, status=Status.OK, truncated=False, raw=b"done\n", stdin
 def test_version_and_atom_check_is_recorded(env):
     ev = run_ev(env, code=3)
     res = claim(env, [ev], [atom(ev, 3)])
-    assert VERIFIER_VERSION == "23" and res.claim["verification"]["verifier_version"] == "23"
+    assert VERIFIER_VERSION == "24" and res.claim["verification"]["verifier_version"] == "24"
     assert {"code": "EXIT_CODE", "ok": True} in res.claim["verification"]["checks"]
 
 
@@ -206,7 +207,7 @@ def b(tmp_path):
 def hub_claim(b, ev, code, text=None):
     return b.hub.claim_add(text or f"The product exits with code {code} when given `{ALT_KEY}`.", [ev],
                            [{"type": "exit_code", "evidence_id": ev, "code": code}], "behavior", "present", "PROVEN",
-                           [{"value": ALT_KEY, "derived": True}])
+                           [{"value": ALT_KEY, "derived": True}], behavior_class="ordinary")
 
 
 def test_hub_run_exit_code_is_proven_and_wrong_code_rejected(b):
@@ -219,7 +220,7 @@ def test_hub_run_exit_code_is_proven_and_wrong_code_rejected(b):
     ev2, _ = b.run(WRONG_KEY, "original")             # rejected key: exit code 1
     atoms = [{"type": "exit_code", "evidence_id": ev2, "code": 1}]
     ok2 = b.hub.claim_add(f"The product exits with code 1 when given `{WRONG_KEY}`.", [ev2], atoms, "behavior",
-                          "present", "PROVEN", [{"value": WRONG_KEY, "derived": True}])
+                          "present", "PROVEN", [{"value": WRONG_KEY, "derived": True}], behavior_class="ordinary")
     assert ok2["status"] == "PROVEN", ok2
     assert hub_claim(b, ev2, 0)["status"] == "REJECTED"
 

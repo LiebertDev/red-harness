@@ -313,7 +313,7 @@ def test_observation_with_bound_compute_is_supported_at_most(ch):
     assert v["supported"] is True and v["support"] == "computation"
     assert "PROVEN_STATIC_CLAIM" in [i["code"] for i in ver(h, r)["issues"]]
     assert {"code": "COMPUTE", "ok": True} in ver(h, r)["checks"]
-    assert ver(h, r)["verifier_version"] == "23"
+    assert ver(h, r)["verifier_version"] == "24"
     rep = h.report_build()  # stays SUPPORTED on re-verification too
     assert rep["counts"]["unsupported_claims"] == 0
 
@@ -344,7 +344,7 @@ def test_compute_never_backs_a_behavior_claim(ch):
     ev, cev, val = _computed(h)
     r = h.claim_add(f"The correct key hash `{val}` is accepted by the program.", [ev, cev],
                     [{"type": "quote", "evidence_id": cev, "text": val}], "behavior", "present", "PROVEN",
-                    [{"value": val, "derived": True}])
+                    [{"value": val, "derived": True}], behavior_class="ordinary")
     assert r["status"] == "UNVERIFIED"
     codes = [i["code"] for i in ver(h, r)["issues"]]
     assert "BEHAVIOR_NEEDS_EXECUTION" in codes and "PROVEN_NEEDS_CONTROLLED_REPLAY" in codes
@@ -371,7 +371,7 @@ def test_tampered_compute_record_is_rejected_by_the_verifier(ch):
 
 def test_compute_found_key_is_proven_only_by_run_controlled(tmp_path):
     """Flow: compute finds a candidate (an observation is at most SUPPORTED) -> run_controlled tries it on the target -> behavior PROVEN."""
-    from .test_run_controlled_mcp import GOOD_KEY
+    from .test_run_controlled_mcp import GOOD_KEY, WRONG_KEY, pair_atom
     h, _, _ = make_hub(tmp_path, ops=("static", "run_controlled", "compute"))
     try:
         ev = static_ev(h, b'char *k = "synthetic-input";\nint tail = 66;\n')
@@ -379,11 +379,12 @@ def test_compute_found_key_is_proven_only_by_run_controlled(tmp_path):
                         [{"name": "k", "evidence_id": ev, "quote": "synthetic-input"},
                          {"name": "t", "evidence_id": ev, "const": 66}])
         assert GOOD_KEY in out["output"]
-        run = h.run_controlled([{"stdin": GOOD_KEY + "\n"}], 5)
-        rev = run["cases"][0]["evidence_id"]
-        r = h.claim_add(f"The license key `{GOOD_KEY}` is accepted by the program.", [rev, out["evidence_id"], ev],
-                        [{"type": "quote", "evidence_id": rev, "text": "License valid"}], "behavior", "present",
-                        "PROVEN", [{"value": GOOD_KEY, "derived": True}])
+        run = h.run_controlled([{"stdin": GOOD_KEY + "\n"}, {"stdin": WRONG_KEY + "\n"}], 5)
+        rev, wrong = run["cases"][0]["evidence_id"], run["cases"][1]["evidence_id"]
+        r = h.claim_add(f"The license key `{GOOD_KEY}` is accepted by the program.",
+                        [rev, wrong, out["evidence_id"], ev],
+                        [{"type": "quote", "evidence_id": rev, "text": "License valid"}, pair_atom(rev, wrong)],
+                        "behavior", "present", "PROVEN", [{"value": GOOD_KEY, "derived": True}], behavior_class="ordinary")
         assert r["status"] == "PROVEN"
     finally:
         h.close()

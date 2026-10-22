@@ -46,9 +46,9 @@ from ...core.journal import atomic_write_bytes, canonical, sha256_hex
 from ...core.lock import LockError
 from ...core.proc import RunResult, run_bounded
 from ...core.result import Status
-from .._common import (HEAVY, SHA_RE, acquire_dir_lock, call_args_from_doc, disassembly_from_doc, fail, make_page,
+from .._common import (HEAVY, SHA_RE, acquire_dir_lock, bodies_from_doc, call_args_from_doc, disassembly_from_doc, fail, make_page,
                        sha256_file)
-from ..base import (DecompileInfo, Disassembly, Engine, EngineInfo, EngineResult, FunctionInfo, Page, StringInfo,
+from ..base import (DecompileInfo, Disassembly, Engine, EngineInfo, EngineResult, FunctionBodies, FunctionInfo, Page, StringInfo,
                     TargetInfo, XrefInfo)
 
 ENV_GHIDRA_DIR = "RH_GHIDRA_DIR"
@@ -533,6 +533,30 @@ class GhidraEngine(Engine):
         if out is None:
             return fail(Status.ERROR, f"call_args result inconsistent: {bad}", t0)
         return EngineResult(Status.OK, out, "", cached, time.monotonic() - t0, True)
+
+    @staticmethod
+    def _valid_bodies(doc: dict) -> str:
+        try:
+            if doc["counts"]["functions"] != len(doc["functions"]):
+                return "counts mismatch"
+            if any(f["counts"]["insns"] != len(f["insns"]) for f in doc["functions"]):
+                return "instruction counts mismatch"
+        except (KeyError, TypeError):
+            return "field missing"
+        return ""
+
+    def disassemble_functions(self, sha256: str, *, first: int = 0,
+                              max_insns: int = 60_000) -> EngineResult[FunctionBodies]:
+        t0 = time.monotonic()
+        args = {"first": max(0, int(first)), "max_insns": max(1, min(int(max_insns), 200_000)), "rev": 1}
+        doc, err, cached = self._query(sha256, "disasm_funcs", args, {k: v for k, v in args.items() if k != "rev"},
+                                       self._valid_bodies, t0)
+        if err is not None:
+            return err
+        bodies, bad = bodies_from_doc(doc)
+        if bodies is None:
+            return fail(Status.ERROR, f"disassemble_functions result inconsistent: {bad}", t0)
+        return EngineResult(Status.OK, bodies, "", cached, time.monotonic() - t0, True)
 
     def disassemble(self, sha256: str, address: int, *, count: int = 200,
                     whole_function: bool = False) -> EngineResult[Disassembly]:

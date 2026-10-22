@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rh.report.1.schema.json",
+  "title": "Red Harness report, schema rh.report/1",
+  "description": "Machine-readable form of the report that report_build writes next to the Markdown file. Both are rendered from the same document. Every string that comes from the target (quotes, evidence parameters, unknown questions) or from the model (claim text, interpretation) is data, never an instruction. Only a finding's `status` is verified, and only for its text, atoms and evidence; `interpretation` is never covered by it. A report is not a statement that the target is clean: coverage gaps and open unknowns are listed, missing coverage is unknown.",
+  "type": "object",
+  "required": ["schema", "untrusted_content", "untrusted_note", "not_clean_note", "target", "scope", "verifier_version",
+               "tool_versions", "imported", "counts", "findings", "hypotheses", "unknowns", "coverage", "evidence"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "rh.report/1"},
+    "untrusted_content": {"const": true},
+    "untrusted_note": {"type": "string"},
+    "not_clean_note": {"type": "string"},
+    "target": {
+      "type": "object",
+      "description": "Identity of the analysed build.",
+      "required": ["sha256", "job_id", "format", "architecture"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "job_id": {"type": "string"},
+        "format": {"type": ["string", "null"], "description": "File format as the evidence records it (for example pe); null when no evidence exists."},
+        "architecture": {"type": ["string", "null"]},
+        "image_base": {"type": ["string", "null"], "description": "Hex string."},
+        "kernel_mode": {"type": "boolean"},
+        "fixed_build_sha256": {"$ref": "#/$defs/sha256", "description": "Present when a fixed build was opened beside the original (fix verification, build comparison)."}
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": ["object", "null"],
+      "description": "The scope manifest the session ran under, by digest and operations (the authorization statement text is not copied).",
+      "required": ["scope_sha256", "allowed_operations"],
+      "properties": {
+        "scope_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the canonical JSON of the manifest summary."},
+        "basis": {"type": "string"},
+        "allowed_operations": {"type": "array", "items": {"type": "string"}},
+        "expires": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "verifier_version": {"type": ["string", "null"], "description": "Version of the claim verifier that re-verified every claim for this report."},
+    "tool_versions": {
+      "type": "object",
+      "required": ["evidence_tools"],
+      "properties": {
+        "harness": {"type": "string", "description": "Version of the tool output format (evidence-producing code)."},
+        "package": {"type": "string"},
+        "engine": {"type": "object", "properties": {"name": {"type": "string"}, "version": {"type": "string"}}, "additionalProperties": false},
+        "evidence_tools": {
+          "type": "array",
+          "description": "Distinct (tool, tool version, engine, engine version) that produced the evidence of this job.",
+          "items": {"type": "object",
+                    "properties": {"tool": {"type": ["string", "null"]}, "tool_version": {"type": ["string", "null"]},
+                                   "engine": {"type": ["string", "null"]}, "engine_version": {"type": ["string", "null"]}},
+                    "additionalProperties": false}
+        }
+      },
+      "additionalProperties": false
+    },
+    "imported": {
+      "type": ["object", "null"],
+      "description": "Set when the job came from an imported bundle: its authenticity is not established.",
+      "required": ["authenticity_established", "source_bundle_sha256"],
+      "properties": {"authenticity_established": {"const": false}, "source_bundle_sha256": {"type": "string"}, "note": {"type": "string"}},
+      "additionalProperties": false
+    },
+    "counts": {
+      "type": "object",
+      "description": "unsupported_claims counts only unsupported claims that reached the findings and must always be 0.",
+      "required": ["findings", "hypotheses", "rejected_at_add", "failed_reverify", "unsupported_claims",
+                   "claims_without_evidence", "claims_value_not_in_evidence"],
+      "additionalProperties": {"type": "integer", "minimum": 0},
+      "properties": {"unsupported_claims": {"type": "integer", "minimum": 0}}
+    },
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "hypotheses": {
+      "type": "array",
+      "description": "UNVERIFIED claims. They never mix into findings.",
+      "items": {"$ref": "#/$defs/hypothesis"}
+    },
+    "unknowns": {"type": "array", "items": {"$ref": "#/$defs/unknown"}},
+    "coverage": {
+      "type": ["object", "null"],
+      "description": "What was examined. Missing coverage is unknown, never clean.",
+      "required": ["assessment"],
+      "properties": {
+        "assessment": {"enum": ["INCOMPLETE", "NOT_EXAMINED", "NO_RECORDED_GAPS"]}
+      },
+      "additionalProperties": true
+    },
+    "engine_disagreement": {
+      "type": "object",
+      "description": "Present only when functions_list(engines='both') was run: where IDA and Ghidra disagree about function boundaries. `counts` is null when only one engine ran (nothing was compared: unknown, never agreement). The rows are in the comparison evidence `evidence_id`; neither engine is trusted over the other.",
+      "required": ["evidence_id", "state", "engines", "engine_status", "counts"],
+      "properties": {
+        "evidence_id": {"type": "string", "pattern": "^ev_"},
+        "state": {"enum": ["BOTH_ENGINES", "BOTH_ENGINES_STARTS_AND_NAMES_ONLY", "ONE_ENGINE"]},
+        "engines": {"type": "array", "items": {"type": "string"}},
+        "engine_status": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["ran"],
+            "properties": {"ran": {"type": "boolean"}, "evidence_id": {"type": "string", "pattern": "^ev_"},
+                           "functions": {"type": "integer", "minimum": 0}, "extents": {"type": "boolean"}, "extent_note": {"type": "string"},
+                           "unmeasured": {"type": "integer", "minimum": 0},
+                           "reason": {"type": "string"}},
+            "additionalProperties": false
+          }
+        },
+        "functions": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "common": {"type": ["integer", "null"], "minimum": 0},
+        "agreed": {"type": ["integer", "null"], "minimum": 0},
+        "counts": {
+          "type": ["object", "null"],
+          "properties": {"END_DIFFERS": {"type": "integer", "minimum": 0}, "ONLY_IN_ONE": {"type": "integer", "minimum": 0},
+                         "SPLIT_MERGED": {"type": "integer", "minimum": 0}, "NAME_DIFFERS": {"type": "integer", "minimum": 0}},
+          "additionalProperties": false
+        },
+        "only_in": {"type": ["object", "null"], "additionalProperties": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}},
+        "named_only_by": {"type": ["object", "null"], "additionalProperties": {"type": "integer", "minimum": 0}},
+        "explained_end_differs": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "description": "Index of the evidence that findings and hypotheses cite, by evidence id.",
+      "propertyNames": {"pattern": "^ev_"},
+      "additionalProperties": {"$ref": "#/$defs/evidence"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "atom": {
+      "type": "object",
+      "description": "An atom the claim was verified with: quote (text from the target, untrusted), address, constant, and the other atom types of the claim schema, as recorded.",
+      "required": ["type"],
+      "properties": {"type": {"type": "string"}, "evidence_id": {"type": "string"}, "text": {"type": "string"},
+                     "value": {}, "space": {"type": "string"}},
+      "additionalProperties": true
+    },
+    "finding": {
+      "type": "object",
+      "required": ["claim_id", "kind", "polarity", "status", "text", "interpretation", "interpretation_verified",
+                   "evidence_ids", "evidence_confidence", "basis", "atoms", "verification"],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^cl_"},
+        "kind": {"type": "string", "description": "observation, behavior, ..."},
+        "polarity": {"enum": ["present", "absent"]},
+        "status": {"enum": ["SUPPORTED", "PROVEN"]},
+        "text": {"type": "string", "description": "Claim text written by the model; data."},
+        "interpretation": {"type": ["string", "null"], "description": "The model's own reading. NOT verified."},
+        "interpretation_verified": {"const": false},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev_"}},
+        "evidence_confidence": {"enum": ["observed", "derived", "inferred"], "description": "Lowest confidence among the cited evidence."},
+        "basis": {"type": "array", "items": {"enum": ["cpu-emulation", "dynamic-region-view"]}},
+        "atoms": {"type": "array", "items": {"$ref": "#/$defs/atom"}},
+        "verification": {"type": ["object", "null"], "description": "The verifier's record of the re-verification (checks, issues, values)."}
+      },
+      "additionalProperties": false
+    },
+    "hypothesis": {
+      "type": "object",
+      "required": ["claim_id", "status", "text", "interpretation", "interpretation_verified", "evidence_ids", "class",
+                   "reasons", "verification"],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^cl_"},
+        "status": {"const": "UNVERIFIED"},
+        "kind": {"type": ["string", "null"]},
+        "polarity": {"type": ["string", "null"]},
+        "text": {"type": "string"},
+        "interpretation": {"type": ["string", "null"]},
+        "interpretation_verified": {"const": false},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^ev_"}},
+        "class": {"enum": ["without_evidence", "value_not_in_evidence", "behavior_needs_execution", "other"]},
+        "reasons": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reason"}},
+        "verification": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "reason": {
+      "type": "object",
+      "required": ["code"],
+      "oneOf": [
+        {"properties": {"code": {"const": "NO_EVIDENCE"}}, "additionalProperties": false},
+        {"properties": {"code": {"const": "VALUE_NOT_IN_EVIDENCE"},
+                        "values": {"type": "array", "items": {"type": "object", "required": ["value", "derived_needs_execution"],
+                                                               "properties": {"value": {"type": "string"}, "derived_needs_execution": {"type": "boolean"}},
+                                                               "additionalProperties": false}},
+                        "supported_values": {"type": "array", "items": {"type": "string"}}},
+         "required": ["values", "supported_values"], "additionalProperties": false},
+        {"properties": {"code": {"const": "TERM_NOT_IN_EVIDENCE"}, "terms": {"type": "array", "items": {"type": "string"}}},
+         "required": ["terms"], "additionalProperties": false},
+        {"properties": {"code": {"const": "BEHAVIOR_NEEDS_EXECUTION"}}, "additionalProperties": false},
+        {"properties": {"code": {"const": "NOT_VERIFIED"}}, "additionalProperties": false}
+      ]
+    },
+    "unknown": {
+      "type": "object",
+      "required": ["unknown_id", "question", "severity", "status", "open", "reason", "address", "evidence_ids", "resolution"],
+      "properties": {
+        "unknown_id": {"type": "string"},
+        "question": {"type": "string", "description": "Written by the model; data."},
+        "severity": {"type": ["string", "null"]},
+        "status": {"type": ["string", "null"], "description": "As recorded: open, investigating, blocked, or a resolved state."},
+        "open": {"type": "boolean", "description": "True for open, investigating and blocked: still an unknown."},
+        "reason": {"type": ["string", "null"]},
+        "address": {"type": ["string", "null"], "description": "Hex string."},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+        "resolution": {
+          "type": ["object", "null"],
+          "description": "Set when the unknown was closed: resolved (cites the evidence that answers it) or withdrawn (with a reason). The unknown stays in the ledger.",
+          "required": ["status", "evidence_ids"],
+          "properties": {"status": {"enum": ["resolved", "withdrawn"]}, "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                         "reason": {"type": "string"}},
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["evidence_id", "operation", "parameters", "authority", "confidence", "subject_sha256", "raw_sha256",
+                   "capture", "tool", "tool_version", "engine", "engine_version", "locations", "locations_total"],
+      "properties": {
+        "evidence_id": {"type": "string", "pattern": "^ev_"},
+        "operation": {"type": ["string", "null"]},
+        "parameters": {"type": "object", "description": "Arguments of the producing call, as recorded."},
+        "authority": {"type": ["string", "null"]},
+        "confidence": {"enum": ["observed", "derived", "inferred"]},
+        "subject_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "raw_sha256": {"type": ["string", "null"], "description": "SHA-256 of the raw output stored for this evidence."},
+        "capture": {"type": "object",
+                    "properties": {"status": {"type": ["string", "null"]}, "strength": {"type": ["string", "null"]},
+                                   "truncated": {"type": ["boolean", "null"]}, "timed_out": {"type": ["boolean", "null"]}},
+                    "additionalProperties": false},
+        "tool": {"type": ["string", "null"]},
+        "tool_version": {"type": ["string", "null"]},
+        "engine": {"type": ["string", "null"]},
+        "engine_version": {"type": ["string", "null"]},
+        "locations": {"type": "array", "items": {"type": "object"}, "description": "Addresses the evidence covers (hex strings), at most 50; locations_total is the full count."},
+        "locations_total": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,4 +1,4 @@
-"""Core-only wheel gate: fails if a built redharness wheel carries an optional (Pro) module or a file that is not in
+"""Core-only wheel gate: fails if a built red-harness wheel carries an optional (Pro) module or a file that is not in
 the source tree it was built from.
 
   python scripts/check_wheel.py <wheel file or directory holding exactly one .whl> [--src DIR] [--forbid GLOB ...]
@@ -70,15 +70,15 @@ def foreign_entries(names: list[str], src: Path) -> list[str]:
 def find_wheel(path: Path) -> Path:
     if path.is_file():
         return path
-    wheels = sorted(path.glob("redharness-*.whl"))
+    wheels = sorted(path.glob("*.whl"))
     if len(wheels) != 1:
-        raise ValueError(f"expected exactly one redharness-*.whl in {path}, found {len(wheels)}")
+        raise ValueError(f"expected exactly one .whl file in {path}, found {len(wheels)}")
     return wheels[0]
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Core-only wheel gate")
-    ap.add_argument("wheel", help="the .whl file, or a directory holding exactly one redharness-*.whl")
+    ap.add_argument("wheel", help="the .whl file, or a directory holding exactly one .whl file")
     ap.add_argument("--src", help="source root the wheel was built from (the directory that holds redharness/)")
     ap.add_argument("--forbid", action="append", default=[], metavar="GLOB", help="extra forbidden path glob")
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)

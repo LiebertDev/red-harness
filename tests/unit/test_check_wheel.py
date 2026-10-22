@@ -18,10 +18,10 @@ def cw():
 
 
 CORE = ["redharness/__init__.py", "redharness/core/proc.py", "redharness/dynamic/backend.py",
-        "redharness-0.1.0.dist-info/METADATA", "redharness-0.1.0.dist-info/RECORD"]
+        "red_harness-0.1.0.dist-info/METADATA", "red_harness-0.1.0.dist-info/RECORD"]
 
 
-def wheel(tmp_path: Path, names, name="redharness-0.1.0-py3-none-any.whl") -> Path:
+def wheel(tmp_path: Path, names, name="red_harness-0.1.0-py3-none-any.whl") -> Path:
     d = tmp_path / "dist"
     d.mkdir(exist_ok=True)
     w = d / name
@@ -74,6 +74,6 @@ def test_usage_errors_are_not_a_pass(cw, tmp_path):
     (tmp_path / "empty").mkdir()
     assert cw.main([str(tmp_path / "empty")]) == 2                  # no wheel
     assert cw.main([str(wheel(tmp_path, ["other/x.py"], "other-1-py3-none-any.whl"))]) == 2   # no redharness package
-    bad = tmp_path / "redharness-bad.whl"
+    bad = tmp_path / "red_harness-bad.whl"
     bad.write_bytes(b"not a zip")
     assert cw.main([str(bad)]) == 2

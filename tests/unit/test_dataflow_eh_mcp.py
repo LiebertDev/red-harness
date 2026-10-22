@@ -1,5 +1,5 @@
-"""`dataflow_slice` wiring of the unmodelled-exception-handler rule (slicer revision 5): the function's x64 unwind data
-(and the engine's name for a statically linked handler) decide whether any value may be reported definite."""
+"""`dataflow_slice` wiring of the unmodelled-exception-handler rule (slicer revisions 5-8): the function's x64 unwind
+data (and the engine's name for a statically linked handler) decide whether any value may be reported definite."""
 from __future__ import annotations
 
 import struct

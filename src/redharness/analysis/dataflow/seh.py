@@ -6,7 +6,9 @@ starts with the same scope table) as its language handler carries a `C_SCOPE_TAB
 `Count` x {BeginAddress, EndAddress, HandlerAddress, JumpTarget} (RVAs). An entry with JumpTarget != 0 is a
 `__try/__except`: an exception raised in [BeginAddress, EndAddress) whose filter accepts it continues at JumpTarget,
 inside the same function. That is the edge (try range -> JumpTarget). JumpTarget == 0 is a `__finally` (a separate
-funclet): no edge in this function.
+funclet): no edge in this function. Those funclets (`__finally`, and the filter function of a row whose HandlerAddress is
+not the constant 1) are not parsed here; `eh.py` marks a function that has one as not modelled, because such a funclet
+runs outside the parent's instruction stream and can write the parent's frame.
 
 The handler RVA is resolved to a name only through the import table (a `jmp [IAT slot]` thunk or a direct IAT slot);
 anything else (a statically linked handler, C++ EH `__CxxFrameHandler*`, x86 frame-based SEH) gives no edges and the

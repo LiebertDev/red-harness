@@ -16,7 +16,7 @@ from redharness.mcp.session import Hub
 from ._fake_engine import BASE, FakeEngine
 from ._fake_sandbox import FakeSandbox
 from .mcp_helpers import make_manifest
-from .test_run_controlled_mcp import GOOD_KEY, fake_system_root, oracle, prove
+from .test_run_controlled_mcp import GOOD_KEY, WRONG_KEY, fake_system_root, oracle, prove
 
 VA = BASE + 0x1250
 IMPORT_NOTE = "imported bundle: authenticity not established"
@@ -51,8 +51,9 @@ def _build_source_job(tmp_path: Path):
     root = tmp_path / "src-data"
     h = _hub(root)
     opened = h.target_open(str(target), str(manifest))
-    run = h.call("run_controlled", {}, lambda: h.run_controlled([{"stdin": GOOD_KEY + "\n"}], 10))
-    proven = prove(h, GOOD_KEY, run["evidence_ids"][0])
+    run = h.call("run_controlled", {}, lambda: h.run_controlled([{"stdin": GOOD_KEY + "\n"},
+                                                                 {"stdin": WRONG_KEY + "\n"}], 10))
+    proven = prove(h, GOOD_KEY, run["evidence_ids"][0], against=run["evidence_ids"][1])
     assert proven["status"] == "PROVEN", proven
     dis = h.disassemble(hex(VA + 0x10), count=4)
     sup = h.claim_add(OBS_TEXT, [dis["evidence_id"]],

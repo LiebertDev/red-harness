@@ -79,6 +79,23 @@ reproduces on the original build and not on the fixed build. Still 18 tools (cap
    "original":{"evidence_id":ev_original,"quote":"License valid"}, "fixed":{"evidence_id":ev_fixed,"quote":"License invalid"}}],
    values=[{"value":"<input>","derived":true}])`. PROVEN needs both runs of the same input, both hash-bound; rules and codes in
    `docs/design/evidence-schema.md` section 4.11.
+5. Static diff of the two builds: `functions_list(compare="fixed")` (a parameter of the existing tool; `offset`, `limit` and `detail` page it).
+   One row per function, ordered changed, added, removed, then matched. Every pair row carries both builds' address, size,
+   instruction count and the first 16 hex digits of two hashes: `bytes_sha256` (the instruction bytes as in the file) and
+   `norm_sha256` (the instruction stream with registers, immediates and stack/frame offsets kept and the addresses of calls,
+   jumps outside the function, data references and table bases normalized away). `changed` rows list the differing
+   instructions (`hunk` lines, at most 5) with the counts of instructions added and removed. `matched` means the same
+   normalized instruction stream and nothing more: a function that only moved has another `bytes_sha256` and the same
+   `norm_sha256` (`moved=yes`), and a changed callee or constant behind a nameless address is not seen. Functions are paired
+   by a stable unique name, then by equal `norm_sha256`, then by mnemonic similarity inside the gaps between already-paired
+   functions (`pairing=` and `ratio=` say which, so a claim can state how a pair was found); the rest is `added` (fixed build
+   only) or `removed` (original only). Only the engine's function boundaries and decoded instructions are used, so the diff is
+   the same logic on Ghidra and IDA (the names, and so some pairings, differ between engines). The evidence has the original
+   build as subject and the fixed build's SHA-256 in its parameters and in the first row, so a claim ("the function at
+   `0x...` differs between the builds") quotes a row and is an ordinary observation. Instructions of the fixed build can be
+   cited only through these rows. The first call analyses the fixed build in the engine (about as long as `target_open` took)
+   and disassembles every function of both builds; later pages reuse it. Builds above 20000 functions or 2000000
+   instructions are refused (`BUILD_TOO_LARGE`), never compared partially.
 Demo (a sample license checker built twice from the same source, once with a fix): an input the original accepts (`<input-A>`)
 is rejected by the fixed build, while another valid input (`<input-B>`) stays valid.
 
@@ -134,8 +151,8 @@ neither `run_controlled` nor `compute` implies it); the Pro-only `dynamic_observ
 ## Tools (18; the cap is enforced by test: `MAX_TOOLS=20`)
 | Tool | What it does |
 |---|---|
-| `target_open(target_path, manifest_path, fixed_target_path?, detail?)` | validates the manifest, opens/analyzes the target; if the same target is reopened, earlier evidence and claims return from the log (`resumed: true`); for a kernel-mode image it also returns the static driver facts (see "Kernel-mode targets"); always returns `target.protection`, the protection diagnosis (see "Protection diagnosis"); `detail='summary'` (default) or `'full'` |
-| `functions_list(offset, limit, detail)` | paged function list (limit <= 200, response size bounded, `next_offset`) |
+| `target_open(target_path, manifest_path, fixed_target_path?, detail?)` | validates the manifest, opens/analyzes the target; if the same target is reopened, earlier evidence and claims return from the log (`resumed: true`); for a kernel-mode image it also returns the static driver facts (see "Kernel-mode targets"); always returns `target.protection`, the protection diagnosis (see "Protection diagnosis") with its `checks` candidate list (see "Check inventory"), `tools` (which tools are usable and why not) and a `next` hint (see "Availability report"); `detail='summary'` (default) or `'full'` |
+| `functions_list(offset, limit, detail, compare?, engines?)` | paged function list (limit <= 200, response size bounded, `next_offset`). `compare="fixed"` (needs the fixed build given to `target_open`) returns instead a static function-level diff of the original build against the fixed build, see "Fix verification" step 5. `engines="both"` (IDA and Ghidra) returns instead where the two engines disagree about the function boundaries, see "Engine disagreement" |
 | `decompile(function, offset, max_chars, detail)` | Hex-Rays output by address (`0x140001250`) or name; long output is paged with `offset`; ends with `// section .text R-X: ...` notes (the PE section + R/W/X of the function and of auto-named references such as `byte_140002040`) |
 | `disassemble(address, end, count, detail)` | up to `count` (<= 500) instructions from a hex address, or the range `[address, end)`; line = address, bytes, text; response size bounded, `next_address` to continue; `PARTIAL` if it hits non-code bytes (use `read_bytes` for data bytes); ends with `; section ...` notes (the PE section + R/W/X of the instructions shown and of auto-named references such as `unk_140002040`) |
 | `dataflow_slice(address, operand, location, size, max_steps, detail, offset, max_chars)` | where the values read by one x86/x64 instruction come from inside its function (docs/design/dataflow-slice.md): the reaching writes as `address | engine text | writes ...`, frame buffers rebuilt byte by byte (`run ... hex=/ascii=` only for bytes equal on every path of the CFG built from the engine's instructions), constants folded through moves, image loads with section, explicit `unknown:` lines; `coverage: partial` and status `PARTIAL` on a truncated function, indirect jump, unknown instruction or step cut; default `detail=summary`; static, same effects as `disassemble` |
@@ -148,10 +165,10 @@ neither `run_controlled` nor `compute` implies it); the Pro-only `dynamic_observ
 | `compute(code, inputs, timeout_s)` | runs the model's own Python 3.12 code (stdlib) in Windows Sandbox with a pinned embeddable CPython, twice; inputs only from this job's evidence; a deterministic, complete result is recorded as `sandboxed-computation` evidence (details below) |
 | `emulate(function, args?, convention?, outputs?, max_instructions?, timeout_s?, stack_size?, detail?, buffers?, memory?, registers?, output_registers?, end?)` | executes ONE function (or the code range `[function, end)`) of the target in a CPU emulator (Unicorn, bounded worker process on the host; nothing runs natively) with the analyst's arguments, buffers, memory pre-writes and initial registers, twice; a deterministic return (or arrival at `end`) is recorded as `cpu-emulation` evidence with the return/final registers and the requested memory reads or SHA-256 digests; any imported API call, OS access or limit stops it with an error and no evidence (details below) |
 | `captured_region(evidence_id?, event?, sha256?, size?, address?, offset?, length?, view?, ...)` | Pro feature: read-only hex / strings / disassembly views over the bytes a stored dynamic observation captured from an executable region; in the Core build it returns `DYNAMIC_BACKEND_UNAVAILABLE` (see "Dynamic observation (Pro)") |
-| `claim_add(text, evidence_ids, atoms, kind, polarity, requested, values, supersedes, interpretation)` | passes the claim through the verifier; the verifier assigns the status. `kind`: `observation` (what is in code/data) or `behavior` (what happens when the program runs); a behavior claim is supported only by `run_controlled` evidence (see below). Every technical term of `text` (identifier, acronym, digit-bearing name, algorithm/format word) must be in a cited evidence, else UNVERIFIED `TERM_NOT_IN_EVIDENCE` (`terms_unsupported` in the reply); the model's own reading goes into `interpretation`, printed as unverified (docs/design/evidence-schema.md §4.12) |
-| `unknown_record(question, reason, address, evidence_ids, severity)` | writes an unanswerable question to the unknowns ledger (instead of guessing); same question+address is one record |
-| `coverage()` | coverage derived from the ledger and call log: tools run, functions/regions examined, truncated/timed-out/failed calls, open unknowns |
-| `report_build()` | re-verifies all claims, produces a Markdown report; includes the "Coverage and unknowns" section |
+| `claim_add(text, evidence_ids, atoms, kind, polarity, requested, values, supersedes, interpretation, behavior_class)` | passes the claim through the verifier; the verifier assigns the status. `kind`: `observation` (what is in code/data) or `behavior` (what happens when the program runs); a behavior claim is supported only by `run_controlled` evidence (see below). Every technical term of `text` (identifier, acronym, digit-bearing name, algorithm/format word) must be in a cited evidence, else UNVERIFIED `TERM_NOT_IN_EVIDENCE` (`terms_unsupported` in the reply); the model's own reading goes into `interpretation`, printed as unverified (docs/design/evidence-schema.md §4.12). A behavior claim declares `behavior_class` (`"acceptance_validation"` or `"ordinary"`; missing: UNVERIFIED `BEHAVIOR_CLASS_MISSING`); a validation claim (input accepted/rejected, key valid, password correct) also needs a `control_pair` atom bound to the input it names, else UNVERIFIED `CONTROL_PAIR_MISSING` (§4.17) |
+| `unknown_record(question, reason, address, evidence_ids, severity, resolves, status)` | writes an unanswerable question to the unknowns ledger (instead of guessing); same question+address is one record. With `resolves=<unknown_id>` it instead CLOSES an earlier unknown: `status='resolved'` (default) cites the `evidence_ids` that answer it, `status='withdrawn'` gives a `reason`; the record is never deleted (see "Unknowns and coverage") |
+| `coverage()` | coverage derived from the ledger and call log: tools run, functions/regions examined, truncated/timed-out/failed calls, open unknowns; also `tools`, the availability report |
+| `report_build(format)` | re-verifies all claims and writes the report twice, from the same data: a Markdown file and a machine-readable JSON file (schema `rh.report/1`, `docs/schema/rh.report.1.schema.json`); includes the "Coverage and unknowns" section. `format` (`markdown` default, `json`, `both`) only chooses what the reply carries inline; both files are always written (`report_path`, `report_json_path`) |
 
 Every output of the engine tools is an evidence record with an `ev_...` id and arrives with `untrusted_content: true` in an
 `<untrusted_target_content>` block: instructions in text coming from the target are not followed. The same (tool, arguments,
@@ -191,6 +208,72 @@ recorded per target and reused on reopen (`step_cached: true`).
 - Kernel-mode images get the same block next to `target.driver`.
 - The open-time scan counts in the `resume` step/evidence counts, but not as a code examination: `coverage()` keeps `NOT_EXAMINED` on a fresh job and reports the diagnosis in its `protection` field.
 
+### Check inventory (`target.protection.checks`)
+`target_open` also lists the CANDIDATES of protection and licensing checks the file shows, so the analyst knows where to read first. It is
+static (imports, strings and instruction byte patterns), needs no engine and runs nothing; it adds no tool. One `check_inventory` evidence
+(`derived`, engine `pe-static`) is recorded per target and protection coverage, and reused on reopen (`step_cached: true`).
+- Closed taxonomy, one primary code per candidate: `C1` licence/key validation, `C2` anti-debug, `C3` anti-VM/sandbox, `C4` self-integrity/hash,
+  `C5` machine/hardware id, `C6` signature/crypto verification, `C7` time/trial, `C8` network activation. The signal table is data
+  (`analysis/check_taxonomy.py`): per signal a code, a kind (`import`, `string`, `pattern`), a strength (`strong`, `moderate`, `weak`), a reason and a
+  false-positive note. Import and string signals of the anti-analysis catalogue are reused, not copied.
+- `state`: `CANDIDATES_FOUND`, `NO_KNOWN_CANDIDATES` or `UNKNOWN`. There is no "no checks" value. `UNKNOWN` is reported when nothing was found and
+  something was not readable or not assessed: unreadable or cut-short import tables, no named imports, a file that is not a parseable PE, no code
+  section to scan, a file over 32 MiB, or a packed image (the protection diagnosis says `likely_partial` / `possibly_partial`: the visible
+  imports and strings may belong to a stub). A capped scan is a coverage gap too: when one string needle has more than 64 matches, the later
+  ones are not examined, so an empty result is `UNKNOWN` (the cap is the reason) and a result with candidates says its coverage is partial.
+  `NO_KNOWN_CANDIDATES` means only that the known signals were not found; custom checks, obfuscated or
+  stack-built strings, run-time resolved APIs and packed or virtualized code are not detected. Candidates found next to a gap are listed together with the
+  gap (`unknowns`, `statement`).
+- `candidates` (strongest first; `candidate_count` is the total, `candidates_truncated` when the reply cut the list: 10 in summary, 40 in full;
+  `by_code` counts per category): `id` (K1...), `code`, `category`, `signal`, `kind`, `strength`, and by kind the `dll` / `function` / `iat_rva`
+  (import; `calls` lists the call sites found), the `string` (inside an `untrusted_target_content` block; `refs` lists the code that points at it) or
+  `in_function` (instruction pattern), `rva` / `file_offset` (hex strings, only when known), `evidence_id` and `quote`. `quote` is the start of the
+  candidate's line in the evidence (`check K3 C2 signal=debugger-present`): cite it in `claim_add`. `detail='full'` adds `why`, `false_positives`,
+  `apis`, `also` (other categories the same string matches), `with` (hash partner), `bytes`, `coverage`, `suppressed` and `notes`.
+- Where the code is: for every listed string and import the scan looks for code that points at it (x64 RIP-relative `lea` / `mov` / `call` / `jmp`,
+  x86 absolute operands) and, on x64, names the enclosing function from the `.pdata` table (`refs=0x1107@fn0x1070`). This is a byte-pattern match:
+  confirm it with `xrefs` / `disassemble`. Without a function table (x86) the function is not named.
+- Known false positives are handled by a stated rule and are never hidden. `suppressed` (evidence lines `suppressed rule=...`, `detail='full'`)
+  lists what was not reported as a candidate: `crt-startup-cluster` (at least 5 of 10 imports that the statically linked C runtime startup pulls in
+  together are present, so IsDebuggerPresent, GetSystemTimeAsFileTime, GetModuleHandle* and GetModuleFileName* are the runtime's own use until `xrefs`
+  shows other code calling them; a real use of one of them in such a binary is therefore found only through the string / pattern signals),
+  `needs-hash-partner` (module-path, memory-map and self-memory reads count as C4 only next to a hash or checksum signal) and `benign-url-host`
+  (namespace, schema and certificate URLs). Every reported candidate carries its false-positive note. Process enumeration, `OpenProcess`, timing
+  reads (`GetTickCount`, `QueryPerformanceCounter`, one `rdtsc`) and the exception filters are not checks.
+- Evidence and claims: a candidate is an OBSERVATION. A claim such as "KERNEL32.dll imports IsDebuggerPresent (candidate C2)" with the `quote` atom is
+  verified like any static evidence (SUPPORTED at most; every technical term of the text, for example the function name, the DLL name and `C2`, must occur
+  in the cited evidence). "The program validates the key" is a behavior claim and needs `run_controlled`. The evidence never has complete coverage, so
+  an absence claim ("there is no anti-debug check") cannot be supported by it (`ABSENCE_WITHOUT_COMPLETE_COVERAGE`).
+- `coverage()` keeps `NOT_EXAMINED` on a fresh job (the open-time scans are not an examination of the code) and reports `checks` (`evidence_id`,
+  `state`, `candidate_count`) next to `protection`. The step counts in the `resume` evidence counts.
+
+### Engine disagreement (`functions_list(engines="both")`)
+With IDA and Ghidra both installed, `functions_list(engines="both")` lists the function boundaries of the open target from both
+engines and reports where they disagree, so one engine's boundaries are never trusted silently. It is an option of the existing
+tool (no new tool); `offset`, `limit` and `detail` page the rows. The job engine is the one `rh mcp --engine` picked; the other
+is started on demand under the install rules above, and its first call analyses the target (minutes for a large binary).
+- Evidence: one inventory evidence per engine (`engines=both, engine=<name>`: a line per function,
+  `0x140001000 name end=0x140001040 insns=12 chunks=1`; the end is taken from that engine's whole-function disassembly because
+  the engines' own `size` fields measure different things) and one comparison evidence whose rows each name BOTH inventory ids
+  (`ghidra_ev=ev_... ida_ev=ev_...`). A claim quotes a row and cites the three ids like any other output.
+- Categories (closed; one row per disagreeing function): `END_DIFFERS` (same start, different end; `end_delta` is the second
+  engine's end minus the first's), `ONLY_IN_ONE` (one engine has a function at a start where the other has no function and
+  no instruction of any of its functions), `SPLIT_MERGED` (one engine's function starts inside a function of the other; the
+  row names the container, and the `END_DIFFERS` row of that container is marked `explained_by`), `NAME_DIFFERS` (two real
+  names; a generated name such as `sub_140001000` / `FUN_140001000` is no name, and a real name only one engine gives is
+  counted in `named_only_by`, not as a disagreement). The header and `result` carry the count per category, `common`,
+  `agreed` and which engine defines the function of each `ONLY_IN_ONE` / `SPLIT_MERGED` row.
+- Coverage states in `result.state`: `BOTH_ENGINES`; `BOTH_ENGINES_STARTS_AND_NAMES_ONLY` (an engine gave no function extents:
+  ends are not compared, `END_DIFFERS` / `SPLIT_MERGED` are not computed); `ONE_ENGINE` (the other engine is not installed,
+  failed to open the target or to list it): status `PARTIAL`, `counts: null`, the reason in `engine_status`. Nothing was
+  compared then: unknown, never agreement, and `coverage()` lists the call as incomplete.
+- A row says what each engine reports, not which one is right (an `ONLY_IN_ONE` function can be a false positive of the engine
+  that lists it, and real names can differ only in representation, mangled against demangled). Resolve it with `disassemble`
+  or `xrefs`.
+- `report_build` adds an "Engine disagreement" section to the Markdown and an `engine_disagreement` object to the JSON report
+  (one document; present only when a comparison exists): state, the counts per category, both inventory ids and the comparison
+  id.
+
 ### Controlled execution (`run_controlled`) and PROVEN
 - Response: per case `evidence_id`, `status`, `exit_code`, `timed_out`, `truncated`, `content` (stdout, then `--- stderr ---`, then
   stderr; inside `<untrusted_target_content>`, limited to 4000 characters per case in the response, full raw output in the evidence).
@@ -209,9 +292,11 @@ recorded per target and reused on reopen (`step_cached: true`).
 - Expected states give a short message: `SCOPE_DENIED` (not allowed in the manifest), `BUSY` (another sandbox is running: wait a minute and
   try once), `SANDBOX_UNAVAILABLE` (also on a non-Windows host: Windows Sandbox exists only on Windows, nothing runs); case timeout/truncation/session error comes in the response with `message`, and that evidence cannot back PROVEN.
 - To get PROVEN: try the value the model proposed/computed as a case; `claim_add(kind="runtime_behavior"|"bypass_poc",
-  requested="PROVEN", evidence_ids=[<run ev_>], atoms=[{"type":"quote","evidence_id":<run ev_>,"text":"License valid"}],
+  behavior_class=..., requested="PROVEN", evidence_ids=[<run ev_>], atoms=[{"type":"quote","evidence_id":<run ev_>,"text":"License valid"}],
   values=[{"value":"<input>","derived":true}])`. The value must be an input to that execution, and the result must be bound by a quote from the output.
-  A wrong input cannot be PROVEN (quote not in output -> REJECTED; value not tried in that execution -> UNVERIFIED). Static evidence does not give PROVEN.
+  A wrong input cannot be PROVEN (quote not in output -> REJECTED; value not tried in that execution -> UNVERIFIED). Static evidence does not give PROVEN. For a validation claim add the
+  control pair of the next item.
+- Behavior claims declare `behavior_class` (verifier 24, evidence-schema §4.17): `"acceptance_validation"` when the claim says an input is accepted or rejected, a key/licence is valid or a password is correct, otherwise `"ordinary"` (prints X, exits with N); without it the claim stays UNVERIFIED (`BEHAVIOR_CLASS_MISSING`). A validation claim (also every `bypass_poc` claim, and an `"ordinary"` one whose text still reads like a verdict) is PROVEN only with a `control_pair` atom over complete runs of the same build: one input the program accepts and one it rejects, inputs equal except the discriminator, each side bound to its own observed outcome, the two outcomes different, and the claim naming the input of the side `asserts` names. Run both inputs as two cases of one `run_controlled` call. One run alone leaves the claim UNVERIFIED (`CONTROL_PAIR_MISSING`). Ordinary behavior claims need no pair.
 - Behavior claims and static evidence: claims like "the program accepts input X", "input X is the accepted value" count as `kind=behavior`. A value APPEARING in decompile output does not show it is the accepted input (a decoy string can resemble the program's expected input). With static evidence alone the most you get is `UNVERIFIED` (`issues`: `BEHAVIOR_NEEDS_EXECUTION`, enters the report only under "Unverified hypotheses"); with `run_controlled` evidence + a quote from the output it becomes `PROVEN`. Sentences describing code (`kind=observation`: "main compares with strcmp against a decoy string") can still be `SUPPORTED` as before.
 - **Output integrity (mitigated, not absolute):** mapped folders stay writable by everyone inside the guest, so a target can still write files to the output
   folder; file access control is not trusted. Every result record is protected instead (`src/redharness/sandbox/integrity.py`): at session start the host writes a
@@ -220,8 +305,10 @@ recorded per target and reused on reopen (`step_cached: true`).
   measured); files the target writes are reported as `side_effects` and are never accepted as results; the target's output remains untrusted content, and
   PROVEN = "observed in execution", not a guarantee of honesty. Every execution evidence's `limitations` field and the PROVEN response's `limitations` list state
   this.
-- The verifier does not know the meaning of a quote: attaching a "License invalid" quote to a "valid" claim is not caught (the accept/reject pair
-  check `CONTROL_PAIR_MISSING` is not implemented).
+- The verifier does not know the meaning of a quote. For a validation claim the control pair supplies the contrast (verifier 24):
+  the accepted side's outcome must be observed in its own run and absent from the rejected run, and the other way round, so
+  a single "License invalid" quote no longer proves "valid". The claim must name the input of the side it asserts, and
+  a side whose quote or the claim's verdict words read as the other side is rejected; beyond that the label stays the claim's declaration.
 
 ### Model computation (`compute`)
 Design and alternatives considered: `docs/design/compute-tool.md`. Short form:
@@ -361,6 +448,24 @@ at a data address (not code); use this for constant arrays or function-pointer t
   literal / hex-form value, not a decimal result value).
   The same holds for the instruction-byte field of `disassemble` lines (`0x401000: 55 push ebp` does not give the number 55).
 
+### Engine error codes (`decompile`, `disassemble`, `xrefs`, `dataflow_slice`)
+A failed engine call returns an MCP error whose code comes from one closed set, identical for IDA and Ghidra (an engine failure
+with none of these keeps its plain status code: `ERROR`, `TIMEOUT`, `TOOL_MISSING`, `MEMORY_LIMIT`). The message says what to try next.
+No evidence is written for a failed call, so the step cache is untouched; the code is in the call journal and `coverage.failed_calls`.
+
+| Code | Meaning | Typical tools |
+|---|---|---|
+| `NO_FUNCTION_AT_ADDRESS` | the address is inside the image but no function covers it (data, or code the engine did not define as a function); `disassemble` it or look in `functions_list` | `decompile`, `dataflow_slice` |
+| `NAME_NOT_RESOLVED` | the function name matched no function, or (Ghidra) more than one; pass an address | `decompile` |
+| `OUT_OF_IMAGE` | the address lies outside the PE image (below the image base or beyond SizeOfImage), so there is no function there; not counted as a coverage gap (same code as `read_bytes`) | `decompile`, `dataflow_slice` |
+| `DECOMPILE_FAILED` | the decompiler ran and produced no usable output | `decompile` |
+| `DECOMPILE_TIMEOUT` | the decompiler budget was exhausted (never an empty result) | `decompile` |
+| `DECOMPILER_UNAVAILABLE` | the engine has no usable decompiler (status `TOOL_MISSING`) | `decompile` |
+
+`disassemble` and `xrefs` do not need a function: an address with no decodable code gives a `PARTIAL` disassembly and an empty xref
+list, not an error; they use the same codes only for an engine-side failure. Engines report a code by starting their error text with it
+(`src/redharness/engines/base.py`: `ENGINE_ERROR_CODES`); text from the target never sets one.
+
 ### Response mode: `detail` and paging
 `functions_list`, `decompile`, `disassemble`, `strings`, `read_bytes`, `file_strings`, `imports` take `detail: "summary" | "full"` (default `full`); `dataflow_slice` too (default `summary`).
 `summary`: no `content` in the response; `summary` (counts, next page), a short `preview` (at most 5 lines, inside `<untrusted_target_content>`)
@@ -369,15 +474,62 @@ calling again with `full` does not run the engine (`step_cached: true`), and cla
 Paging: `functions_list`/`strings` `offset`+`limit` -> `next_offset`; `decompile` `offset`+`max_chars`
 -> `shown.next_offset`; `disassemble` `address`+`count`/`end` -> `next_address`. `driver_scan` is not part of the tool set.
 
+### Availability report (`tools`) and next-tool hint (`next`)
+`tools/list` always returns the same tools. What is usable for the open target is reported instead, in `target_open` and
+`coverage` (`tools`):
+
+```json
+"tools": {"usable": ["target_open", "functions_list", "decompile", "...", "report_build"],
+          "unavailable": {"run_controlled": {"kind": "scope", "code": "SCOPE_DENIED",
+                                             "reason": "allowed_operations lacks 'run_controlled'"}, "...": {}},
+          "note": "Harness guidance, not evidence about the target (do not cite it). A call applies the same checks; tools/list does not change."}
+```
+- `kind` says why a tool is not usable (the first reason that applies): `scope` (the manifest's `allowed_operations` lack the
+  permission, see the effect table), `target` (kernel-mode image: `run_controlled` is never allowed), `edition` (a Pro
+  implementation, e.g. `captured_region` or `observe`, is not part of this build), `platform` (`emulate` runs on Windows hosts
+  only), `extra` (an optional package is not installed: `unicorn` for `emulate`), `engine` (the engine has no decompiler for this
+  target: `decompile`), `runtime` (the pinned Python for `compute` is not installed), `sandbox` (Windows Sandbox is not
+  available: `run_controlled`, `compute`). `code` is the error a call would return.
+- It is the same decision a call makes: `Hub.call` runs `mcp/availability.py::blocker` before every tool, and the report is
+  built from it, so the report cannot disagree with a call (tests/unit/test_availability.py checks every tool over a matrix of
+  manifests and installations). `run_controlled(observe)` rows appear in `unavailable` when `run_controlled` is usable but the
+  observe permission or the Pro tracer is not. A tool that is usable can still fail on its arguments.
+  Error precedence of one call: the kernel-mode refusal (`run_controlled`), then no target (`NO_TARGET`), then the scope
+  (`SCOPE_DENIED`), then availability (`DYNAMIC_BACKEND_UNAVAILABLE`, `PLATFORM_UNSUPPORTED`, `EMULATOR_MISSING`, `TOOL_MISSING`,
+  `COMPUTE_RUNTIME_MISSING`, `SANDBOX_UNAVAILABLE`), and only then the tool's own checks: argument validation (`BAD_ARGUMENT`)
+  and the engine error codes. So a malformed `observe` on a build without the Pro tracer returns
+  `DYNAMIC_BACKEND_UNAVAILABLE`, not `BAD_ARGUMENT`.
+- `next`: a successful reply of a tool that has follow-ups in the registry (`ToolSpec.follow_ups`) ends with a one-line hint,
+  e.g. after `functions_list`: `hint, not evidence (never cite it): decompile (read a candidate); xrefs (find its callers)`.
+  Only tools that are usable right now are named (a tool the scope does not grant is not suggested), the words are fixed registry
+  text and never target data, and the hint is added after the evidence is recorded: it is in no evidence, no journal and no
+  report, so a quote of it is rejected (`QUOTE_NOT_IN_RAW`). Error replies and `claim_add`/`unknown_record`/`coverage`/
+  `report_build` carry no hint.
+- Output budget: the report is about 1 KB and the hint under 260 characters; both ride along with `detail='summary'` replies.
+- Eval note: the eval prompts mention both fields (`blind.GUIDANCE_NOTE`); eval results made before this change saw different
+  tool output and are not strictly comparable with later ones.
+
 ### Unknowns and coverage
 - `unknown_record`: the model records a question it cannot answer instead of guessing (question, reason, related address, evidence ids,
   severity). The record is an `rh.unknown/1` event (`reason` and `address` are optional fields; the id derives from question+address).
+- Closing an unknown (no extra tool, to stay under the tool cap): `unknown_record(resolves="unk_...", status="resolved", evidence_ids=["ev_..."])`
+  when evidence now answers it (at least one valid, not invalidated `ev_` id of this job is REQUIRED), or
+  `unknown_record(resolves="unk_...", status="withdrawn", reason="...")` when the question no longer matters (the reason is REQUIRED).
+  Pass nothing else (no question/address). It writes an `UNKNOWN_UPDATED` journal event (`expected_revision` guards against a stale
+  record) and moves the record to `resolved`/`withdrawn` with a `resolution` ({status, evidence_ids, reason?}); the original question,
+  reason and supporting evidence stay, nothing is deleted. Closing again with the same status and evidence is a no-op; a different
+  resolution of a closed unknown is `UNKNOWN_ALREADY_CLOSED`. Other errors: `UNKNOWN_NOT_FOUND`, `UNKNOWN_EVIDENCE_ID`,
+  `BAD_RESOLUTION` (missing evidence ids / reason). A resolution is the model's claim that the cited evidence answers the question;
+  the report lists it with those ids so a reader can check. A closed unknown no longer counts as a gap (`open_unknowns`), a
+  recorded question with the same text and address keeps its closed status.
 - `coverage`: computed from the ledger and the `TOOL_CALL` log, not from the model's statement. `assessment`: `NOT_EXAMINED` (no evidence),
   `INCOMPLETE` (truncated/partial evidence, a failed/timed-out call, or an open unknown exists) or `NO_RECORDED_GAPS`.
   **No value means "clean"**: missing coverage is unknown, not absence; `NO_RECORDED_GAPS` only says there is no recorded
   gap. If the same (tool, arguments) later gives full output, the old gap closes.
+- `coverage` also lists `closed_unknowns` (+ `resolved_unknowns_total`, `withdrawn_unknowns_total`) next to `open_unknowns`.
 - `report_build`: the report has a "Coverage and unknowns" section (assessment, tools run, truncated calls, unconsumed
-  lists, open unknowns); the response carries the `coverage` summary. Missing coverage does not make the report "clean".
+  lists, open unknowns, and a "Resolved and withdrawn unknowns" subsection with the cited evidence); the response carries the `coverage` summary. Missing coverage does not make the report "clean".
+- `report_build` JSON (`rh.report/1`): the same document the Markdown is rendered from, so the two cannot disagree. It holds the target identity (`sha256`, format, architecture), the scope digest and allowed operations, the verifier version, the tool and engine versions, `findings` (claim id, kind, status, text, atoms with quotes and addresses, cited evidence ids, the verifier's record), `hypotheses` (always `UNVERIFIED`, with structured `reasons` and a `class`; never mixed into findings), `unknowns` (with an `open` flag), `coverage`, and an `evidence` index of what the claims cite (operation, parameters, hashes, locations as hex strings). A model's `interpretation` is carried next to a finding with `interpretation_verified: false`: the status does not cover it. Every quote, claim text and parameter is data, JSON-escaped and ASCII-only in the file; the document says `untrusted_content: true`. `format="json"` returns the document inline only if it is at most 30000 characters (`report_json_truncated` otherwise); the file is always whole. The schema file validates the output (`tests/unit/test_report_json.py`).
 
 ### Output format
 All address fields are hex strings (`"0x140001250"`: `result.address`, `target.entry`, `target.image_base`, `parameters.function`...).
@@ -397,9 +549,24 @@ Verifier issues tell the model what to do via `issues[].hint`.
   32-bit value: `-1073741819` and `3221225477` (`0xC0000005`) are the same code; write a negative code in the claim text as
   `0x...` (a text `-1` is read as the number 1). A verified code backs the same number in the text only where it stands in an
   exit-code phrase (`exit code N`, `exit status N`, `exits with [code] N`, `returns N to the operating system`, where `N` is decimal,
-  signed or the `0x` pattern); the same number anywhere else (an address, a count) and any other number still need their own evidence. Example: `claim_add(kind="behavior", requested="PROVEN", evidence_ids=[ev_run],
+  signed or the `0x` pattern); the same number anywhere else (an address, a count) and any other number still need their own evidence. Example: `claim_add(kind="behavior", behavior_class="ordinary", requested="PROVEN", evidence_ids=[ev_run],
   text="The program exits with code 0 when given `<candidate-input>`.", atoms=[{"type":"exit_code","evidence_id":ev_run,"code":0}],
   values=[{"value":"<candidate-input>","derived":true}])` (the input must be one the run was given).
+- `{"type":"control_pair","asserts":"accepted","discriminator":{"source":"stdin","index":0},"accepted":{"evidence_id":"ev_<run A>","outcome":{"type":"quote","quote":"License valid"}},"rejected":{"evidence_id":"ev_<run B>","outcome":{"type":"exit_code","code":1}}}` (verifier 24): contrasting `run_controlled` cases of the job's target build.
+  `discriminator.source` is `stdin` (`index` = the stdin line that differs; omit it to let the whole stdin differ) or
+  `argv` (`index` = the argv item, required); everything else (argv, stdin, support files) must be equal. A side may list
+  repeated cases of one input as `"evidence_ids":[...]`. An outcome is an exact quote of that case's stdout or stderr or
+  its recorded exit code (side effects are recorded per session, not per case, so they are not an outcome). Every case
+  must also be in `evidence_ids`. `asserts` (`accepted` | `rejected`) names the side the claim is about: the claim
+  names that side's discriminator input (in the text or in `values`; compared as recorded and with surrounding
+  whitespace removed) and not the other side's; one claim per side; sides that differ only in whitespace are invalid.
+  Malformed, a claim that names the wrong input or none, verdict words or a quoted outcome that contradict the side, uncited, not a `run_controlled` run of the target build (two builds use
+  `fix_pair`), inputs differing outside the discriminator, or an outcome its own case does not show: REJECTED
+  `CONTROL_PAIR_INVALID`. A truncated run or unclean session: UNVERIFIED `CONTROL_PAIR_INCOMPLETE` (a timed-out run is
+  failed evidence and rejected, as everywhere). An outcome that also holds on the other side: UNVERIFIED
+  `CONTROL_PAIR_SAME_OUTCOME`. Repeats of one input that disagree, the same input on both sides, or another cited complete
+  run of a side's input without that side's outcome: UNVERIFIED `CONTROL_PAIR_UNSTABLE`. A valid pair also binds the
+  claim to the run output for PROVEN.
 
 Every `0x...` literal in the claim text must be supported by an atom or evidence. Static evidence gives at most
 `SUPPORTED` (`PROVEN` only with `run_controlled` evidence, see above). A claim without evidence becomes
@@ -440,7 +607,7 @@ In the Core build both commands print a notice that the feature is not included 
 
 ## Limits (UNVERIFIED / open)
 - `patch_poc` is not a tool and will not be one (fix verification on a vendor-rebuilt binary instead); `evidence_get` is not in this skeleton; (`job_status` is carried by the `resume` block of `target_open`). There is no tool to resolve an unknown (`resolved`): if the same (tool, arguments) gives full output only the coverage gap closes, the recorded unknown stays open.
-- The claim verifier is version 23 (term binding; `exit_code` atom): technical terms in a claim must appear in the cited evidence, else UNVERIFIED `TERM_NOT_IN_EVIDENCE`.
+- The claim verifier is version 24 (term binding; `exit_code` and `control_pair` atoms): technical terms in a claim must appear in the cited evidence, else UNVERIFIED `TERM_NOT_IN_EVIDENCE`.
 - Kernel-mode targets are refused for execution (`KERNEL_TARGET_NO_USERMODE_RUN`).
 - Engines: IDA and a Ghidra 12.1.3 headless backend both exist (`src/redharness/engines/`); `rh mcp` starts the IDA engine by default; `rh mcp --engine ida|ghidra` selects one explicitly (unknown name or an engine that is not available exits non-zero, no silent fallback; the engine is passed in-process, no environment variable). Address translation: the server adds an RVA location next to the VA location in IDA evidence
   (if the image base is known); no file-offset location is produced.

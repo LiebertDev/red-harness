@@ -95,11 +95,11 @@ def test_derived_value_supported_by_isolated_execution_evidence(env):
     static = env.ev(raw=DECOMP_RAW, locations=())
     run = env.replay_ev(raw=b"ACCEPTED password=abcde-2026-xyz\n")
     claim = dict(values=[{"value": "abcde-2026-xyz", "derived": True}])
-    r = env.ledger.add_claim("Password.", "runtime_behavior", "present", [static, run], **claim)
+    r = env.ledger.add_claim("Password.", "runtime_behavior", "present", [static, run], **claim, behavior_class="ordinary")
     assert r.status is ClaimStatus.PROVEN  # behavior claim + execution evidence + a value that appears in the output
     weak = env.replay_ev(raw=b"ACCEPTED password=abcde-2026-xyz\n", environment={
         "id": "p", "platform": "windows", "architecture": "x64", "isolation": "process"})
-    r = env.ledger.add_claim("Password 2.", "runtime_behavior", "present", [static, weak], **claim)
+    r = env.ledger.add_claim("Password 2.", "runtime_behavior", "present", [static, weak], **claim, behavior_class="ordinary")
     assert r.status is ClaimStatus.UNVERIFIED and "VALUE_DERIVED_NEEDS_EXECUTION" in codes(r)
 
 

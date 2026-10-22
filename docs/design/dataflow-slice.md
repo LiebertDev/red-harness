@@ -508,8 +508,10 @@ Exception edges (closes the "no exception-dispatch edges" limit where the data i
   `__GSHandlerCheck_SEH`) carries a `C_SCOPE_TABLE`; each row with a non-zero `JumpTarget` is a `__try/__except`: an
   exception raised in [BeginAddress, EndAddress) continues at JumpTarget in the same function. Rows with
   JumpTarget 0 (`__finally` funclets), chained unwind info, other language handlers (C++ EH `__CxxFrameHandler*`),
-  and x86 frame-based SEH give no edges. The same edges are used with every engine; an edge is used only when its
-  target is a decoded instruction of the function and its try range covers some of them.
+  and x86 frame-based SEH give no edges; since revision 8 a function with a `__finally` row or with a filter function
+  instead of the constant `1` is not modelled at all (6.4), so its edges no longer buy a definite value.
+  The same edges are used with every engine; an edge is used only when its target is a decoded instruction of the
+  function and its try range covers some of them.
 - Fixpoint: before every instruction inside a try range, the state an exception raised there would carry is joined
   into the `__except` block's entry state (the frame as it is, x64 volatile registers unknown). The block is then
   analysed like any other; the taint fallback of 6.1 remains for blocks that still have no known predecessor
@@ -540,7 +542,7 @@ Callee-writable parameter areas (closes "stack arguments above the home space an
   `GetProcAddress`, `strcspn` in the 32-bit benchmark target; the slice after the `CreateFileW` call shows those
   0x18 bytes non-definite with the reason "parameter area of call ... 0x38 bytes".
 
-### 6.4 Exception handlers the slicer does not model (slicer revision 5)
+### 6.4 Exception handlers the slicer does not model (slicer revisions 5-8)
 
 Soundness gap closed (EH edge analysis, 2026-10-22): a catch funclet is not part of the parent's decoded
 stream. It can write a frame slot and resume the parent at an address the slicer has no edge for, so in
@@ -552,8 +554,17 @@ Which functions (`analysis/dataflow/eh.py`; an `eh=unmodelled` token in the `flo
 result summary):
 - x64: any `RUNTIME_FUNCTION` that covers a decoded instruction of the function and whose `UNWIND_INFO` (indirect and
   chained entries followed, 8 hops) has `UNW_FLAG_EHANDLER` / `UHANDLER`, unless the handler is one of
-  - `__C_specific_handler` / `__GSHandlerCheck_SEH` named through the import table with a readable scope table (the
-    modelled case of 6.3, unchanged);
+  - `__C_specific_handler` / `__GSHandlerCheck_SEH` named through the import table with a readable scope table whose
+    rows are all pure constant-filter `__except` (the modelled case of 6.3, a subset of it since revision 8): each row's
+    `JumpTarget != 0` and `HandlerAddress == 1` (`EXCEPTION_EXECUTE_HANDLER`, the only value `seh.py` reads as a
+    constant; every other `HandlerAddress` is a code RVA). A row with `HandlerAddress != 1` runs a filter funclet
+    during dispatch, and a row with `JumpTarget == 0` is a `__finally` whose `HandlerAddress` is the termination-handler
+    funclet run during unwind. Both funclets are separate code in the PE, receive the establisher frame pointer and can
+    write the parent's frame, so one such row makes the function not modelled (revision 8). The first offending row in
+    table order is named: `C-specific filter funclet at 0x... not modelled` / `__finally funclet at 0x... not modelled`.
+    The scope table's edges are still built and used (an `__except` block is a real in-function edge); the rule above
+    only means nothing in the function is reported definite. A row whose range is empty (`BeginAddress >= EndAddress`)
+    contains no instruction, fires for no PC and is skipped, as in `seh.py`;
   - `__GSHandlerCheck` (stack cookie check only, it never resumes);
   - a C++ frame handler (`__CxxFrameHandler`/`2`/`3`, `__GSHandlerCheck_EH`, `__CxxFrameHandler4`,
     `__GSHandlerCheck_EH4`) whose FuncInfo has no try block (FH3: `nTryBlocks == 0` with a valid magic; FH4: header
@@ -566,9 +577,13 @@ result summary):
   be followed. Reasons read like `C++ EH, handler __CxxFrameHandler4`.
 - x86: images carry no unwind tables, so the registration is recognised in the decoded instructions: a `fs:[0]`
   operand (IDA `large fs:0`, Ghidra `FS:[0x0]`) or a reference to `_SEH_prolog*`, `_EH_prolog*`, `_except_handler3/4`,
-  `_CxxFrameHandler*`, `_local_unwind`/`_global_unwind` in the text or symbol of an operand. Limit: a prolog helper
-  that the engine shows only as `sub_...` and that is reached without any of these markers is not detected (stripped
-  static CRT); such a function keeps the pre-5 behaviour (no handler edges).
+  `_CxxFrameHandler*`, `_local_unwind`/`_global_unwind` in the text or symbol of an operand. A direct call to an
+  unnamed target (`sub_...`/`FUN_...` or no name) is also checked against byte signatures of the MSVC x86 prolog
+  helpers (`__EH_prolog3*`, `__SEH_prolog4*`), read from the first 64 bytes of the target through the PE reader and
+  cached per target; relocated operands are wildcards. This catches `call __SEH_prolog4` when the engine gives a
+  statically linked helper no symbol (slicer revision 7); the reason then reads
+  `x86 SEH prolog helper (signature __SEH_prolog4) at 0x...`. Limit: a helper whose bytes match no signature stays
+  undetected, and the check is not applied through an indirect call or a tail jump.
 
 Rule: the handler may run at any point after the function is entered and resume at any instruction (the continuation
 address is in the funclet's code, not known), so no value that a handler could have changed may be reported definite
@@ -593,9 +608,19 @@ introduced, so a claim cannot reach SUPPORTED from a value in such a function (`
 candidates; a `writes ... value=` immediate on the write instruction itself stays unconditional, it is a fact about
 that instruction).
 
-Known residuals (not changed by this rule): filter funclets with a non-constant filter and `__finally` funclets of a
-modelled `__C_specific_handler` function can still write the frame on the dispatch path without the slicer seeing
-it; a C++ function whose FuncInfo is not readable is treated as not modelled, and a catch funclet sliced as its own
-function is not analysed against the parent's frame. Precision cost: in a not-modelled function every read of a
-local after its write is unknown (candidates remain); C++ functions with only destructor unwinding and `/GS`-only
-functions are unaffected.
+Known residuals (not changed by this rule): a C++ function whose FuncInfo is not readable is treated as not modelled, and
+a catch funclet sliced as its own function is not analysed against the parent's frame.
+
+Precision cost of revision 8: a `__C_specific_handler` function is no longer modelled as soon as one row's filter is a
+function (any filter other than the literal `1`) or it has a `__finally`, even when the funclet provably writes nothing
+that reaches a modelled read. In the x64 EH ground-truth fixture (`tests/fixtures/eh/eh_cases.cpp`, built by
+`tests/fixtures/eh/build.ps1`) all three C-specific cases lose their previous result: `eh_seh_try_except` and
+`eh_nested_handler` (their filters call `eh_seh_filter` and write no frame slot), and `eh_seh_try_finally`, whose finally
+funclet at `0x140001f7d` does write the joined local
+(`mov dword ptr [rbp+0x38], 1`) -- the same value as the inline body, so the former `0x1 definite` happened to be right
+on the only path that reaches the compare, but only the funclet's code could establish that. All three now report the
+read as unknown with the reason; the `__except` edges are still present. Gaining that precision back needs the
+funclets' code analysed in the parent's frame (option (a)), which this rule deliberately does not do.
+In a not-modelled function every read of a local after its write is unknown (candidates remain); C++ functions with only
+destructor unwinding, `/GS`-only functions and C-specific tables whose rows are all constant-filter `__except` are
+unaffected.

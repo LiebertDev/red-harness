@@ -2,7 +2,7 @@
 (decoded strings, computed constants, checksum outputs, unpacked buffers). Nothing runs natively; the result is an
 observation of emulation, never of a program run. Design: docs/design/emulation.md.
 
-The emulator package is optional (`pip install "redharness[emulate]"`); without it the tool answers EMULATOR_MISSING.
+The emulator package is optional (`pip install "red-harness-core[emulate]"`); without it the tool answers EMULATOR_MISSING.
 """
 
 from .spec import SpecError, build_request

@@ -15,6 +15,7 @@ Contract (fail-closed):
 from __future__ import annotations
 
 import abc
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -22,6 +23,29 @@ from typing import Generic, TypeVar
 from ..core.result import Status
 
 T = TypeVar("T")
+
+# Stable engine error codes: a closed set, identical for every engine. An engine reports one by starting its error text
+# with `CODE: ` (IDA worker, Ghidra script); the backend lifts it into `EngineResult.code`, the MCP layer into the tool
+# error code. Anything else stays the plain `Status` (ERROR / TIMEOUT / TOOL_MISSING ...).
+NO_FUNCTION_AT_ADDRESS = "NO_FUNCTION_AT_ADDRESS"    # the address is not inside a function the engine defined
+NAME_NOT_RESOLVED = "NAME_NOT_RESOLVED"              # a function name matched no function (or more than one)
+OUT_OF_IMAGE = "OUT_OF_IMAGE"                        # the address lies outside the PE image (set by the MCP layer)
+DECOMPILE_FAILED = "DECOMPILE_FAILED"                # the decompiler ran and produced no usable output
+DECOMPILE_TIMEOUT = "DECOMPILE_TIMEOUT"              # the decompiler budget was exhausted
+DECOMPILER_UNAVAILABLE = "DECOMPILER_UNAVAILABLE"    # the engine has no usable decompiler
+ENGINE_ERROR_CODES = frozenset({NO_FUNCTION_AT_ADDRESS, NAME_NOT_RESOLVED, OUT_OF_IMAGE, DECOMPILE_FAILED,
+                                DECOMPILE_TIMEOUT, DECOMPILER_UNAVAILABLE})
+_CODE_RE = re.compile(r"^(?:\w+ failed: )?(?:worker|script) error: (?:[\w.$]+: )?(" + "|".join(sorted(ENGINE_ERROR_CODES))
+                      + r")(?:: |$)")
+
+
+def split_error(detail: str) -> tuple[str, str]:
+    """(stable code, message) of a backend error detail like `decompile failed: worker error: LookupError: CODE: text`;
+    ("", detail) when it carries no code. Only the leading error prefix counts: text from the target never sets a code."""
+    m = _CODE_RE.match(detail or "")
+    if m is None:
+        return "", detail
+    return m.group(1), detail[m.end():].strip() or m.group(1)
 
 
 @dataclass(frozen=True)
@@ -136,6 +160,23 @@ class Disassembly:
 
 
 @dataclass(frozen=True)
+class FunctionBody:
+    """One function with all its instructions (chunks included), in address order."""
+    address: int
+    name: str
+    size: int                    # as the engine's function list reports it
+    disassembly: Disassembly
+
+
+@dataclass(frozen=True)
+class FunctionBodies:
+    """A chunk of consecutive functions (address order, as in `functions`) with their instructions."""
+    items: list[FunctionBody]
+    total: int                   # functions in the target
+    next_index: int | None       # index of the first function of the next chunk; None = this was the last
+
+
+@dataclass(frozen=True)
 class EngineResult(Generic[T]):
     status: Status
     data: T | None = None
@@ -144,6 +185,7 @@ class EngineResult(Generic[T]):
     duration_s: float = 0.0
     untrusted_content: bool = False
     extra: dict = field(default_factory=dict)
+    code: str = ""  # stable error code (ENGINE_ERROR_CODES) when the failure is one of them, else ""
 
     @property
     def ok(self) -> bool:
@@ -183,6 +225,30 @@ class Engine(abc.ABC):
         NOT abstract: old/fake engines that do not know this method return `TOOL_MISSING` ("unsupported"),
         never a silently empty result or an exception."""
         return EngineResult(Status.TOOL_MISSING, None, f"{self.name}: disassemble unsupported")
+
+    def disassemble_functions(self, sha256: str, *, first: int = 0,
+                              max_insns: int = 60_000) -> EngineResult[FunctionBodies]:
+        """The whole-function instruction lists of consecutive functions, from function index `first` (address order, the
+        order of `functions`), stopping at the first function boundary after `max_insns` instructions; `next_index`
+        continues. Used by the build comparison. Default: one `functions` page plus one whole-function `disassemble` per
+        function (correct, slow on an engine that starts a process per call: the real engines override it with a
+        single bulk run). A function the engine cannot disassemble gives an error, never an empty body."""
+        page = self.functions(sha256, offset=first, limit=200)
+        if not page.ok:
+            return EngineResult(page.status, None, page.detail, duration_s=page.duration_s)
+        items: list[FunctionBody] = []
+        used = 0
+        for fn in page.data.items:
+            if items and used >= max_insns:
+                break
+            r = self.disassemble(sha256, fn.address, count=20_000, whole_function=True)
+            if r.data is None:
+                return EngineResult(r.status, None, f"0x{fn.address:x}: {r.detail}")
+            items.append(FunctionBody(fn.address, fn.name, fn.size, r.data))
+            used += len(r.data.items)
+        done = first + len(items)
+        return EngineResult(Status.OK, FunctionBodies(items, page.data.total,
+                                                      done if done < page.data.total else None), untrusted_content=True)
 
     def decode(self, sha256: str, address: int, *, count: int = 64) -> EngineResult[Disassembly]:
         """Instructions decoded linearly from `address` up to and including the first return or unconditional jump,

@@ -8,9 +8,14 @@ stream of the parent. This module finds those functions so that the slicer repor
 - x64: the function's `RUNTIME_FUNCTION` -> `UNWIND_INFO` (indirect and chained entries followed) names an exception /
   termination handler that is not one of the modelled ones. Handlers that cannot resume in this function are benign and
   keep the function modelled: `__GSHandlerCheck` (stack cookie check only) and C++ frame handlers whose FuncInfo has no
-  try block (destructor unwinding only; control never returns into the frame).
+  try block (destructor unwinding only; control never returns into the frame). A `C_SCOPE_TABLE` (the modelled handler of
+  `seh.py`) is modelled only when every row is a pure `__except` whose filter is the constant EXCEPTION_EXECUTE_HANDLER
+  (HandlerAddress == 1): a row with a filter function (JumpTarget != 0, HandlerAddress != 1) runs that filter funclet
+  during dispatch and a row with JumpTarget == 0 runs its termination-handler funclet during unwind, and both are
+  separate code that receives the establisher frame pointer and can write the parent's frame.
 - x86: no unwind tables exist; the frame-based registration is recognised in the decoded instructions (`fs:[0]`
-  accesses, SEH/EH prolog helpers, `__except_handler`, `__CxxFrameHandler` references).
+  accesses, SEH/EH prolog helpers, `__except_handler`, `__CxxFrameHandler` references). A statically linked prolog the
+  engine named `sub_...`/`FUN_...` is recognised by the byte signature of its first instructions.
 
 Everything unknown is treated as "not modelled": unreadable unwind data, a chain that cannot be followed, a handler
 that cannot be named.
@@ -150,7 +155,7 @@ class UnwindData:
         data = off + 4
         if key in _SCOPE:
             if imported:
-                return None if self._scope_table_ok(key, data) else f"C scope table of handler {shown} unreadable"
+                return self._scope_table_why(shown, data)
             return f"statically linked handler {shown} (scope table not parsed)"
         if key in _GS_ONLY:
             return None   # stack-cookie check: never resumes in the frame
@@ -169,12 +174,28 @@ class UnwindData:
         b = _read(self.img, self.read, rva, 4)
         return struct.unpack("<I", b)[0] if b else None
 
-    def _scope_table_ok(self, key: str, data: int) -> bool:
+    def _scope_table_why(self, shown: str, data: int) -> str | None:
+        """None when every row of the C scope table is a `__except` whose filter is the constant 1 (the modelled case of
+        section 6.3); otherwise why a funclet the slicer does not parse can run and write the parent's frame. The first
+        offending row is named: the whole function is not modelled either way."""
         b = _read(self.img, self.read, data, 4)
         if b is None:
-            return False
+            return f"C scope table of handler {shown} unreadable"
         count = struct.unpack("<I", b)[0]
-        return 0 < count <= MAX_SCOPES and _read(self.img, self.read, data + 4, 16 * count) is not None
+        rows = _read(self.img, self.read, data + 4, 16 * count) if 0 < count <= MAX_SCOPES else None
+        if rows is None:
+            return f"C scope table of handler {shown} unreadable"
+        base = self.img.image_base
+        for j in range(count):
+            b_, e_, h_, t_ = struct.unpack_from("<IIII", rows, 16 * j)
+            if not b_ < e_:
+                continue      # an inconsistent row contains no instruction, so it never fires (seh.py: no edge either)
+            if t_ == 0:       # __finally: HandlerAddress is the termination-handler funclet, run during unwind
+                if h_:
+                    return f"__finally funclet at 0x{base + h_:x} not modelled"
+            elif h_ != 1:     # __except with a filter function, run during dispatch (1 = EXCEPTION_EXECUTE_HANDLER)
+                return f"C-specific filter funclet at 0x{base + h_:x} not modelled"
+        return None
 
     def _cxx3_try_blocks(self, data: int) -> int | None:
         """nTryBlocks of the FuncInfo the handler data points to; None when it cannot be read or is not a FuncInfo."""
@@ -192,25 +213,103 @@ class UnwindData:
 _FS0 = re.compile(r"\bfs:\s*(?:\[\s*)?(?:0x0+|0+h?)\s*\]?(?![0-9a-z])")
 _HELPER = re.compile(r"(?:_SEH_prolog|_SEH_epilog|_EH_prolog|_EH_epilog|_except_handler\d|_CxxFrameHandler\d*|"
                      r"_local_unwind\d?|_global_unwind\d?|__ehhandler|_except_handler4_common)", re.I)
+_AUTO_NAME = re.compile(r"^(?:sub_|FUN_|thunk_FUN_|j_sub_)", re.I)
+
+MAX_PROLOG_BYTES = 64      # enough for the longest signature below; the prolog helper is entered at its first byte
+MAX_PROLOG_CACHE = 256     # per image: call targets with their first bytes
+
+# Byte signatures of the statically linked MSVC x86 prolog helpers, read from tests/fixtures/eh/build/eh_cases_x86.exe
+# (`dumpbin /disasm`: __EH_prolog3_GS at 0x401213, __SEH_prolog4_GS at 0x401250). None is a wildcard: an operand the
+# linker relocates (the pushed handler address). Every other byte is fixed executable content.
+PROLOG_SIGNATURES: tuple[tuple[str, tuple[int | None, ...]], ...] = (
+    # push eax; push fs:[0]; lea eax,[esp+0Ch]; sub esp,[esp+0Ch]; push ebx; push esi; push edi; mov [eax],ebp;
+    # mov ebp,eax  -- the handler arrives in eax (`mov eax, offset handler; call ...`). Covers __EH_prolog3,
+    # __EH_prolog3_GS and the __EH_prolog3_catch variants (they share this prolog; the cookie check follows).
+    ("__EH_prolog3", (0x50, 0x64, 0xFF, 0x35, 0, 0, 0, 0, 0x8D, 0x44, 0x24, 0x0C,
+                      0x2B, 0x64, 0x24, 0x0C, 0x53, 0x56, 0x57, 0x89, 0x28, 0x8B, 0xE8)),
+    # push <handler>; push fs:[0]; mov eax,[esp+10h]; mov [esp+10h],ebp; lea ebp,[esp+10h]; sub esp,eax;
+    # push ebx; push esi; push edi  -- covers __SEH_prolog4 and __SEH_prolog4_GS (the cookie check follows).
+    ("__SEH_prolog4", (0x68, None, None, None, None, 0x64, 0xFF, 0x35, 0, 0, 0, 0, 0x8B, 0x44, 0x24, 0x10,
+                       0x89, 0x6C, 0x24, 0x10, 0x8D, 0x6C, 0x24, 0x10, 0x2B, 0xE0, 0x53, 0x56, 0x57)),
+)
 
 
-def x86_markers(insns, limit: int = 3) -> list[str]:
+def match_prolog(head: bytes) -> str | None:
+    """Name of the MSVC x86 prolog helper whose signature starts `head`, or None."""
+    for name, sig in PROLOG_SIGNATURES:
+        if len(head) >= len(sig) and all(w is None or head[k] == w for k, w in enumerate(sig)):
+            return name
+    return None
+
+
+def _callee_head(image, va: int) -> bytes | None:
+    """First MAX_PROLOG_BYTES bytes at `va` through the image view, cached per image and target."""
+    if image is None:
+        return None
+    cache = getattr(image, "_eh_prolog_heads", None)
+    if cache is None:
+        cache = {}
+        try:
+            image._eh_prolog_heads = cache
+        except Exception:      # a view that does not accept attributes: still answer, just without a cache
+            cache = None
+    if cache is not None and va in cache:
+        return cache[va]
+    try:
+        ld = image.load(va, MAX_PROLOG_BYTES)
+        head = ld.data if ld is not None else None
+    except Exception:          # an unreadable target is no evidence for a helper
+        head = None
+    if cache is not None and len(cache) < MAX_PROLOG_CACHE:
+        cache[va] = head
+    return head
+
+
+def prolog_at(image, va: int) -> str | None:
+    """Signature name of the prolog helper at `va`, read from the image; None for anything else."""
+    head = _callee_head(image, va)
+    return match_prolog(head) if head else None
+
+
+def _unnamed(sym: str) -> bool:
+    return not sym or bool(_AUTO_NAME.match(sym))
+
+
+def _prolog_call(ins, image) -> tuple[str, int] | None:
+    """(signature name, target VA) when `ins` is a direct call to an unnamed function that starts with a prolog."""
+    if image is None or str(ins.mnemonic).lower() != "call" or not ins.operands:
+        return None
+    op = ins.operands[0]
+    if op.kind != "near" or op.value is None or not _unnamed(op.sym or ""):
+        return None
+    name = prolog_at(image, op.value)
+    return (name, op.value) if name else None
+
+
+def x86_markers(insns, image=None, limit: int = 3) -> list[str]:
     """x86 code registers its exception handler in the frame (`fs:[0]` chain) or through a CRT prolog helper; neither
-    is described by any table. Returns up to `limit` descriptions of what in the decoded instructions shows it."""
+    is described by any table. Returns up to `limit` descriptions of what in the decoded instructions shows it.
+    `image` (PeImageView-like) lets a direct call to an unnamed target be matched against the prolog byte signatures:
+    the helper touches `fs:[0]` itself, so the caller's own instructions may show no marker at all."""
     out: list[str] = []
     for ins in insns:
         low = ins.text.lower()
-        what = None
+        desc = None
         if "fs:" in low and _FS0.search(low):
-            what = "fs:[0] exception registration"
+            desc = f"fs:[0] exception registration at 0x{ins.address:x}"
         else:
             for blob in [ins.text] + [o.sym for o in ins.operands if o.sym]:
                 m = _HELPER.search(blob)
                 if m:
-                    what = f"reference to {m.group(0)}"
+                    desc = f"reference to {m.group(0)} at 0x{ins.address:x}"
                     break
-        if what:
-            out.append(f"x86 SEH/EH frame handler: {what} at 0x{ins.address:x}")
+            if desc is None:
+                hit = _prolog_call(ins, image)
+                if hit:
+                    desc = (f"x86 SEH prolog helper (signature {hit[0]}) at 0x{hit[1]:x} "
+                            f"called at 0x{ins.address:x}")
+        if desc:
+            out.append(f"x86 SEH/EH frame handler: {desc}")
             if len(out) >= limit:
                 break
     return out

@@ -1,0 +1,57 @@
+name: Bug report
+description: A tool returned something wrong, failed, or a claim was verified or rejected incorrectly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security vulnerability do not use this form; see SECURITY.md.
+        Do not paste binaries, secrets or text you are not allowed to share.
+  - type: input
+    id: version
+    attributes:
+      label: Red Harness version
+      description: Output of `rh version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      options:
+        - Ghidra
+        - IDA
+        - Not engine related
+    validations:
+      required: true
+  - type: input
+    id: engine_version
+    attributes:
+      label: Engine version and Windows version
+      placeholder: "Ghidra 12.1.3, Windows 10 Pro 22H2"
+    validations:
+      required: true
+  - type: textarea
+    id: reply
+    attributes:
+      label: The exact tool reply
+      description: The tool name, its arguments, and the reply or error code exactly as returned (not a summary).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence ids
+      description: The `ev_...` ids of the calls involved, and the claim id if a claim was verified or rejected.
+      placeholder: "ev_0123456789abcdef"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead, and how you know
+      description: Say how you checked it (a second tool, the source code, a run). Attach a minimal target if you can share one.
+    validations:
+      required: true

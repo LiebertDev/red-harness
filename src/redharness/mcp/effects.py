@@ -50,9 +50,10 @@ def virtual_entry(tool: str, args: Mapping[str, Any] | None) -> str | None:
 
 
 class EffectDenied(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, needs: tuple[str, ...] = ()):
         super().__init__(f"{code}: {message}")
         self.code, self.message = code, message
+        self.needs = needs   # the manifest operations of which any one would allow it (empty: none can)
 
 
 def check_permission(tool: str, manifest: ScopeManifest,
@@ -62,7 +63,8 @@ def check_permission(tool: str, manifest: ScopeManifest,
     if eff is None:
         raise EffectDenied("TOOL_NOT_IN_EFFECT_TABLE", f"tool {tool!r} has no entry in the effect table; refused")
     if not manifest.allows(BASE_OPERATION):
-        raise EffectDenied("SCOPE_DENIED", f"scope manifest does not allow {BASE_OPERATION!r}")
+        raise EffectDenied("SCOPE_DENIED", f"scope manifest does not allow {BASE_OPERATION!r}",
+                           (BASE_OPERATION,))
     for flag in eff.active():
         need = EFFECT_REQUIRES[flag]
         if not need:
@@ -72,7 +74,7 @@ def check_permission(tool: str, manifest: ScopeManifest,
                 "SCOPE_DENIED",
                 f"Scope manifest does not allow {tool}: it has effect '{flag}', which needs "
                 f"{' or '.join(repr(o) for o in need)} in allowed_operations. Static tools still work; "
-                f"ask the user to add it to the manifest.")
+                f"ask the user to add it to the manifest.", need)
 
 
 def effects_markdown(table: Mapping[str, ToolEffects] | None = None) -> str:

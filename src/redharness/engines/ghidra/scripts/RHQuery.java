@@ -76,13 +76,13 @@ public class RHQuery extends GhidraScript {
                 Function f = it.next();
                 if (f.getName().equals(name)) hits.add(f);
             }
-            if (hits.isEmpty()) throw new IllegalArgumentException("LOOKUP: could not resolve name: " + name);
-            if (hits.size() > 1) throw new IllegalArgumentException("LOOKUP: ambiguous name (" + hits.size() + " matches): " + name);
+            if (hits.isEmpty()) throw new IllegalArgumentException("NAME_NOT_RESOLVED: could not resolve name: " + name);
+            if (hits.size() > 1) throw new IllegalArgumentException("NAME_NOT_RESOLVED: ambiguous name (" + hits.size() + " matches): " + name);
             return hits.get(0);
         }
         long ea = Long.parseLong(req.getProperty("function_addr"));
         Function f = currentProgram.getFunctionManager().getFunctionContaining(addr(ea));
-        if (f == null) throw new IllegalArgumentException(String.format("LOOKUP: no function at address: 0x%x", ea));
+        if (f == null) throw new IllegalArgumentException(String.format("NO_FUNCTION_AT_ADDRESS: no function at address: 0x%x", ea));
         return f;
     }
 
@@ -316,7 +316,7 @@ public class RHQuery extends GhidraScript {
         String stop = "";
         int total;
         if (whole) {
-            if (f == null) throw new IllegalArgumentException(String.format("LOOKUP: no function at address: 0x%x", start));
+            if (f == null) throw new IllegalArgumentException(String.format("NO_FUNCTION_AT_ADDRESS: no function at address: 0x%x", start));
             InstructionIterator it = currentProgram.getListing().getInstructions(f.getBody(), true);
             int n = 0;
             while (it.hasNext()) {
@@ -348,6 +348,50 @@ public class RHQuery extends GhidraScript {
             + ",\"function_name\":" + q(f == null ? "" : f.getName()) + ",\"total\":" + total
             + ",\"full\":" + complete + ",\"stop_reason\":" + q(stop)
             + ",\"counts\":{\"insns\":" + list.size() + "}";
+    }
+
+    // ---- disasm_funcs: the whole-function instruction lists of many functions in ONE run (build comparison).
+    // Functions are taken in address order (same order as the exported function list), from index `first`; a chunk ends
+    // at the first function boundary after `max_insns` instructions, `next_index` says where the next chunk starts.
+    private String opDisasmFuncs(Properties req) throws Exception {
+        int first = Integer.parseInt(req.getProperty("first", "0"));
+        int maxInsns = Integer.parseInt(req.getProperty("max_insns", "60000"));
+        int perFunction = 20000;
+        List<Function> fns = new ArrayList<>();
+        FunctionIterator fit = currentProgram.getFunctionManager().getFunctions(true);
+        while (fit.hasNext()) fns.add(fit.next());
+        StringBuilder xs = new StringBuilder("[");
+        int emitted = 0, used = 0, idx = first;
+        for (; idx < fns.size(); idx++) {
+            if (emitted > 0 && used >= maxInsns) break;
+            Function f = fns.get(idx);
+            InstructionIterator it = currentProgram.getListing().getInstructions(f.getBody(), true);
+            StringBuilder body = new StringBuilder();
+            int n = 0, kept = 0;
+            while (it.hasNext()) {
+                Instruction ins = it.next();
+                if (monitor.isCancelled()) throw new CancelledException();
+                n++;
+                if (kept < perFunction) {
+                    if (kept++ > 0) body.append(',');
+                    body.append(insnJson(ins));
+                }
+            }
+            boolean complete = n == kept;
+            if (emitted++ > 0) xs.append(',');
+            xs.append("{\"function_address\":").append(f.getEntryPoint().getOffset())
+              .append(",\"function_name\":").append(q(f.getName()))
+              .append(",\"size\":").append(f.getBody().getNumAddresses())
+              .append(",\"insns\":[").append(body).append("],\"total\":").append(n)
+              .append(",\"full\":").append(complete)
+              .append(",\"stop_reason\":").append(q(complete ? "" : "COUNT: returned " + kept + " of " + n + " instructions"))
+              .append(",\"counts\":{\"insns\":").append(kept).append("}}");
+            used += kept;
+        }
+        xs.append(']');
+        return "\"functions\":" + xs + ",\"function_total\":" + fns.size() + ",\"first\":" + first
+            + ",\"next_index\":" + (idx < fns.size() ? String.valueOf(idx) : "null")
+            + ",\"counts\":{\"functions\":" + emitted + "}";
     }
 
     // ---- decode: linear decoding WITHOUT changing the program (PseudoDisassembler) up to a return/unconditional jump
@@ -405,7 +449,7 @@ public class RHQuery extends GhidraScript {
     private String opCallArgs(Properties req) throws Exception {
         long ea = Long.parseLong(req.getProperty("address"));
         Function f = currentProgram.getFunctionManager().getFunctionContaining(addr(ea));
-        if (f == null) throw new IllegalArgumentException(String.format("LOOKUP: no function at address: 0x%x", ea));
+        if (f == null) throw new IllegalArgumentException(String.format("NO_FUNCTION_AT_ADDRESS: no function at address: 0x%x", ea));
         int ptr = currentProgram.getDefaultPointerSize();
         StringBuilder xs = new StringBuilder("[");
         int n = 0;
@@ -462,6 +506,7 @@ public class RHQuery extends GhidraScript {
                 case "disassemble": body = opDisassemble(req); break;
                 case "callargs": body = opCallArgs(req); break;
                 case "decode": body = opDecode(req); break;
+                case "disasm_funcs": body = opDisasmFuncs(req); break;
                 default: throw new IllegalArgumentException("unknown op: " + op);
             }
             // "complete" is the LAST field: it cannot be present in a half-written/truncated document.
