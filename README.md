@@ -12,6 +12,67 @@ not by a value appearing in code. Whatever was not examined is reported as unkno
 Design notes are in `docs/design/`, the tool surface is in `docs/usage-mcp.md` and `docs/tool-design.md`, and the
 privacy rules for tracked files are in `docs/privacy-guard.md`. Third-party attributions: `NOTICE`; optional third-party components and their licences: `THIRD_PARTY_NOTICES.md`.
 
+## Quickstart in 5 minutes
+Red Harness is not on PyPI yet, so install from a checkout. Verified with Python 3.12 on Windows 10, building a wheel and
+installing it with pipx (the command runs from the installed package, not from the source tree):
+```
+python -m pip install build
+python -m build --wheel
+pipx install dist\redharness-0.1.0-py3-none-any.whl     # from a checkout without a wheel: pipx install .
+rh deps list                       # is Ghidra found? if not: rh deps show ghidra; it needs a JDK 21
+rh quickstart C:\Windows\System32\notepad.exe
+```
+No model and no API key needed. `rh quickstart` checks the prerequisites, writes a scope manifest for the file (use a file you
+own or are authorized to analyse), opens it with Ghidra (else IDA), runs a small static pass through the same code path as the
+MCP tools, records two example claims that quote real evidence, builds the report and prints where it is, a short summary and
+how to connect Claude Code or another MCP client. The first open runs the engine's analysis once (133 s for notepad.exe with
+Ghidra 12.1.3 in our run); a repeat run is served from the cache (1 s).
+
+## Demo
+Real output of `rh quickstart C:\Windows\System32\notepad.exe --engine ghidra` (Ghidra 12.1.3, Windows 10; the data folder
+path is shown as `<DATA_ROOT>`):
+```
+Static pass with ghidra (the first open analyses the whole binary once; a cached result is reused later)
+  target_open     x86 64-bit, 498 functions, 557 strings, protection NO_KNOWN_INDICATORS (140s)
+  functions_list  498 functions, evidence ev_04e98a81e9b3894d
+  imports         301 symbols from 28 DLLs, evidence ev_7e00c8229285bd85
+  strings         100 of 557 returned, evidence ev_c01e6dbb5a5ea895
+  claim_add       SUPPORTED: The target imports GDI32.dll!CreateDCW at 0x140026800.
+  claim_add       SUPPORTED: The target contains the string Unknown exception at 0x1400273d0.
+
+Summary
+  target     notepad.exe, entry 0x140023bd0, sha256 da5807bb0997cc6b...
+  pe profile PE32+ x64 windows_gui 7 sections aslr=yes dep=yes cfg=yes
+  claims     2 recorded, 2 verified by the claim verifier
+  report     2 findings, 0 hypotheses, 0 unsupported claims in findings (must be 0)
+  coverage   NO_RECORDED_GAPS; not 'clean': functions listed 200/498, strings 100/557, nothing decompiled
+
+Report: <DATA_ROOT>\jobs\job_da5807bb0997cc6b\report\report-8d4209bf00e1cef1.md
+Total time: 142s
+```
+The generated report is in [docs/examples/notepad-quickstart-report.md](docs/examples/notepad-quickstart-report.md); each claim
+cites evidence ids and quotes, and the coverage section lists what was not examined. [docs/examples/README.md](docs/examples/README.md)
+explains each section.
+## Use from your agent
+One command registers the MCP server (the absolute path of the installed `rh`, with the engine it found) in the AI coding
+clients on this machine and installs the Red Harness skill, so your agent knows the evidence workflow:
+```
+rh setup --dry-run                 # shows what would change, with diffs; writes nothing
+rh setup                           # applies it; restart the client afterwards
+rh setup --client claude-code      # only one client: claude-code, codex, cursor, gemini, claude-desktop
+rh setup --print                   # only prints the configuration snippets, touches nothing
+rh setup --uninstall               # removes only the red-harness entry and the skill file it installed
+```
+Claude Code and Codex CLI are configured through their own `claude mcp add` / `codex mcp add`; Cursor
+(`~/.cursor/mcp.json`), Gemini CLI (`~/.gemini/settings.json`) and Claude Desktop (`claude_desktop_config.json`, classic or
+Microsoft Store install) through their JSON files, merged. The skill goes to `~/.claude/skills/red-harness/` (Claude Code) and
+`~/.agents/skills/red-harness/` (Codex CLI, Gemini CLI); `--no-skill` skips it. Every file is copied to
+`<name>.rh-backup-<timestamp>` before it changes, existing servers and settings are kept, and a second run changes nothing.
+A `red-harness` entry that does not run `rh mcp`, or a skill file you edited, is reported and left alone (`--force`
+overrides that).
+Then ask your agent, for example: "reverse engineer `C:\path\to\tool.exe`; I own it". Use only binaries you own or are
+authorized to test.
+
 ## Editions
 This repository is the **Core** edition (Apache-2.0). **Pro** is a separate commercial edition. The MCP tool surface (18 tools)
 is the same in both; Pro adds capabilities behind the same tools and a few extra commands.

@@ -14,6 +14,11 @@ HELP = f"""redharness {__version__}: evidence-bound static reverse-engineering h
 usage: rh <command> [options]
 
 commands:
+  quickstart <binary>         first evidence-backed result in minutes, no model needed (checks prerequisites, writes a
+                              scope manifest, runs a small static pass, builds the report; `rh quickstart --help`)
+  setup [--client ID] [--dry-run] [--print] [--uninstall]
+                              register the MCP server in your AI coding clients (Claude Code, Codex CLI, Cursor,
+                              Gemini CLI, Claude Desktop) and install the agent skill (`rh setup --help`)
   mcp [--engine ida|ghidra]   start the MCP server on stdio (tools need an IDA or Ghidra engine; see docs/usage-mcp.md)
   studio [--engine ...] [--model ...]
                               local web UI on 127.0.0.1 over the same tools (`rh studio --help`)
@@ -62,6 +67,12 @@ def main(argv: list[str] | None = None) -> int:
     if args and args[0] in ("-V", "--version", "version"):
         print(__version__)
         return 0
+    if args and args[0] == "quickstart":
+        from .quickstart import main as quickstart_main
+        return quickstart_main(args[1:])
+    if args and args[0] == "setup":
+        from .agent_setup import main as setup_main
+        return setup_main(args[1:])
     if args and args[0] == "mcp":
         # stdout belongs to the MCP protocol; nothing is printed here.
         from .mcp.server import EngineSelectionError, normalize_engine_name, reply_initialize_error, serve_stdio
@@ -171,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:  # noqa: BLE001
             print(f"import failed: {e}")
             return 1
-    print(f"redharness {__version__}\ndata_root: {Config.load().data_root}\ncommands: rh version | rh mcp [--engine ida|ghidra] | rh studio | rh eval | rh bench | rh deps | rh kernel | rh export | rh import | rh compute-runtime (rh --help for details)")
+    print(f"redharness {__version__}\ndata_root: {Config.load().data_root}\ncommands: rh version | rh quickstart <binary> | rh mcp [--engine ida|ghidra] | rh studio | rh eval | rh bench | rh deps | rh kernel | rh export | rh import | rh compute-runtime (rh --help for details)")
     return 0
 
 

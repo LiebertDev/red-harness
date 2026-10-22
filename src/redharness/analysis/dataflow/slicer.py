@@ -17,12 +17,14 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from ...engines.base import Disassembly, InsnInfo, OperandInfo
+from . import eh as ehmod
 from . import x86
-from .state import (CONST, EMPTY, NEG_INF, PTR_BYTES, PTRB, RANGE, STACK, UNINIT, UNKNOWN, State, Val, fmt_off, join_state, ranges_of,
-                    tags_of, taint_state, top_state, unknown)
+from .state import (CONST, EMPTY, FRAME, NEG_INF, PTR_BYTES, PTRB, RANGE, STACK, UNINIT, UNKNOWN, State, Val, fmt_off,
+                    join_state, ranges_of, tags_of, taint_state, top_state, unknown)
 
-SLICER_REV = 4   # 4: exception edges from x64 scope tables, callee-writable stack arguments (A3)
+SLICER_REV = 6   # 5: no definite value in functions with unmodelled exception handlers (C++ EH, x86 SEH, ...); 6: also when the exception directory is unreadable or truncated
 # 2: spilled frame pointers, RANGE pointers, last-write candidates, cstr; 3: assumes= on writes
+# 4: exception edges from x64 scope tables, callee-writable stack arguments (A3)
 CACHE_FUNCTIONS = 2
 _CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 MAX_FUNCTION_INSNS = 20_000
@@ -156,11 +158,32 @@ def entry_state(ctx: x86.Ctx) -> State:
     return State(regs)
 
 
+def _step(st: State, ins: InsnInfo, ctx: x86.Ctx) -> None:
+    """One instruction. In a function with an unmodelled exception handler the handler may have run and rewritten any
+    frame slot or register before any later instruction, so no value survives an instruction as definite: stack bytes
+    are made non-definite when written (State.put), registers here. Frame addresses in rsp/rbp stay (the unwinder
+    restores them; same assumption as the not-analysed-block taint); any other frame address register is dropped and
+    its target counted as escaped."""
+    x86.step(st, ins, ctx)
+    if not ctx.eh:
+        return
+    for f, v in st.regs.items():
+        if f == "rsp" and v.kind != CONST:
+            continue
+        if v.kind in FRAME and f == "rbp":
+            continue
+        if v.kind == CONST or v.parts is not None or v.kind in FRAME:
+            if v.kind in FRAME:
+                st.escape(v.v)
+            st.regs[f] = Val(UNKNOWN, 0, v.sites, v.why | ctx.eh, v.srcs)
+
+
 def run_block(st: State, body: list[InsnInfo], ctx: x86.Ctx, stop: int | None = None) -> State:
+    st.eh = ctx.eh
     for ins in body:
         if stop is not None and ins.address == stop:
             break
-        x86.step(st, ins, ctx)
+        _step(st, ins, ctx)
     return st
 
 
@@ -229,6 +252,7 @@ def _run_block_with_dispatch(st: State, body: list[InsnInfo], edges, ctx: x86.Ct
     raised there would carry into the __except block is joined into that handler's entry state: the frame as it is,
     the volatile registers unknown (x64 dispatch restores only the non-volatile ones)."""
     dispatch: dict[int, State] = {}
+    st.eh = ctx.eh
     for ins in body:
         for t, lo, hi in edges:
             if lo <= ins.address < hi:
@@ -237,7 +261,7 @@ def _run_block_with_dispatch(st: State, body: list[InsnInfo], edges, ctx: x86.Ct
                     if f in d.regs:
                         d.regs[f] = unknown(f"{ctx.rname(f)} at exception dispatch into 0x{t:x}", {ins.address})
                 dispatch[t] = d if t not in dispatch else join_state(dispatch[t], d, t)
-        x86.step(st, ins, ctx)
+        _step(st, ins, ctx)
     return st, dispatch
 
 
@@ -511,12 +535,24 @@ def _assumes(srcs) -> str:
     return (" assumes=" + ",".join(sorted(t))) if t else ""
 
 
+def _eh_reasons(insns: list[InsnInfo], bits: int, given) -> tuple[str, ...]:
+    found = list(given) + (ehmod.x86_markers(insns) if bits == 32 else [])
+    return tuple(sorted(dict.fromkeys(found)))
+
+
+def _eh_why(reasons: tuple[str, ...]) -> str:
+    more = f"; +{len(reasons) - 3} more" if len(reasons) > 3 else ""
+    return "exception handler not modelled (" + "; ".join(reasons[:3]) + more + ")"
+
+
 def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, operand: int | None = None,
                    location: str | None = None, size: int | None = None, max_steps: int = MAX_STEPS_DEFAULT,
                    engine: str = "", cache_key: tuple | None = None, exc_edges=(),
-                   call_args: dict | None = None) -> SliceResult:
+                   call_args: dict | None = None, eh_unmodelled=()) -> SliceResult:
     """`cache_key`: identifies (target, function, engine version, slicer revision); the function's analysis is then
-    reused by later queries into the same function (in-process, at most CACHE_FUNCTIONS functions)."""
+    reused by later queries into the same function (in-process, at most CACHE_FUNCTIONS functions).
+    `eh_unmodelled`: reasons (from eh.UnwindData.unmodelled) why the function has exception handlers the slicer does
+    not model; x86 frame-based SEH is added here from the instructions. Non-empty: nothing is reported definite."""
     if bits not in (32, 64):
         raise SliceError("ARCH_UNSUPPORTED", f"only x86 (32-bit) and x64 are supported (bits={bits})")
     if size is not None and not 1 <= size <= MAX_BUFFER:
@@ -537,6 +573,9 @@ def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, oper
     else:
         ctx = x86.Ctx(bits, image)
         ctx.call_args = dict(call_args or {})
+        ctx.eh_reasons = _eh_reasons(insns, bits, eh_unmodelled)
+        if ctx.eh_reasons:
+            ctx.eh = frozenset([_eh_why(ctx.eh_reasons)])
         cfg = build_cfg(insns, entry, dis.complete, exc_edges)
         ins_states = analyze(cfg, ctx)
         # final replay with effect recording (each instruction once, from the converged block-entry states)
@@ -557,6 +596,8 @@ def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, oper
         reasons.append(why)
         st = run_block(top_state(ctx.families, why), cfg.blocks[tb], ctx, stop=target)
     reads = _query_reads(st, by_addr[target], ctx, operand, location, size)
+    if ctx.eh:
+        reasons.append(next(iter(ctx.eh)))
     reasons += [f"{r} at 0x{a:x}" for r, a in ctx.partial.items()]
     reasons += cfg.notes
 
@@ -565,6 +606,7 @@ def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, oper
              f"insn: 0x{target:x} | {_safe(tins.text)}",
              f"flow: cfg=harness from {engine or 'engine'} instructions, blocks={len(cfg.blocks)} "
              f"insns={len(insns)} exception_edges={cfg.exc_edges} (x64 scope tables) "
+             + ("eh=unmodelled " if ctx.eh else "") +
              f"callee_parameter_lists={sum(v is not None for v in ctx.call_args.values())}/"
              f"{sum(1 for i in insns if x86.base_mnemonic(i.mnemonic) == 'call')} calls; "
              "sp=harness (sp0 = stack pointer at function entry)",
@@ -605,6 +647,8 @@ def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, oper
                             "runs": [[a, e - a] for a, e in _runs(bs)],
                             "candidate_runs": [[a, e - a] for a, e in _candidate_runs(bs)],
                             "assumes": sorted(frozenset().union(*(tags_of(b.srcs) for b in bs if b.kind == CONST)))})
+    if ctx.eh:
+        whys |= ctx.eh   # the rule is named even when the value is unknown for another reason as well
     def_sites = sorted(s for s in sites if s in by_addr)
     lines.append(f"defs: {len(def_sites)} (address order)")
     cut = max(0, len(def_sites) - max_steps)
@@ -646,6 +690,10 @@ def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, oper
     if "A2" in tags:
         lim.append("A2: stores through the stack pointer while its frame offset is unknown do not overlap "
                    "frame-pointer-relative slots")
+    if ctx.eh:
+        lim.append("this function has exception handlers the slicer does not model (see the unknown: lines): a handler "
+                   "may rewrite any frame slot and resume at any instruction, so only immediates, read-only image "
+                   "bytes and the frame pointer are reported definite; written bytes appear as candidates")
     if tags:
         lim.append("values marked assumes=A1/A2 hold only under that assumption (not unconditional)")
     lines += [f"assumption: {x}" for x in lim]
@@ -653,5 +701,7 @@ def slice_function(dis: Disassembly, *, bits: int, target: int, image=None, oper
     summary = {"reads": len(reads), "definite_values": n_def, "unknown_values": n_unk, "defs": len(def_sites),
                "defs_shown": len(shown), "buffers": buffers, "unknown_reasons": len(unk),
                "image_ranges": len(img_ranges), "complete": complete, "assumptions": sorted(tags)}
+    if ctx.eh:
+        summary["eh_unmodelled"] = list(ctx.eh_reasons)
     return SliceResult("\n".join(lines) + "\n", complete, reasons, addresses,
                        [r for r in img_ranges if r in ctx.image_refs], summary)

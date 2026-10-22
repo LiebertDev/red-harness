@@ -51,6 +51,8 @@ What the worker process gets (`emulate/host.py`, `emulate/worker.py`, `emulate/h
 - The base interpreter in isolated mode (`-I`; not a venv launcher, which would need a child process), started
   suspended and assigned to a Job Object before it runs: 1 GiB memory cap, wall-clock cap, kill on close, and
   `ActiveProcessLimit=1`, so the worker cannot start any child process.
+- Platform: the two measures above exist only on Windows. On any other platform `emulate` does not start the worker and
+  answers `EMULATE_PLATFORM_UNSUPPORTED` (no code is run); it never emulates unhardened.
 - Low integrity: the worker lowers its own token to Low (S-1-16-4096) right after reading its job from stdin and
   BEFORE it reads the target or loads the emulator; if that fails it refuses the job (`EMU_WORKER_FAILED`). At Low
   integrity the default no-write-up policy denies writes to Medium-labelled locations: the user profile, the

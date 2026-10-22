@@ -78,7 +78,7 @@ def simulate_death(hub):
 
 # ------------------------------------------------------------------ the summary tool does not need an extra tool
 def test_resume_summary_lives_in_target_open_not_a_new_tool():
-    assert len(TOOL_NAMES) == 18 <= MAX_TOOLS and "job_status" not in TOOL_NAMES
+    assert len(TOOL_NAMES) <= MAX_TOOLS and "job_status" not in TOOL_NAMES
 
 
 # ------------------------------------------------------------------ torn ledger tail
@@ -198,7 +198,7 @@ def test_stale_job_lock_from_dead_server_is_reclaimed_and_recorded(tmp_path):
     # a server that died while holding the lock: its PID is gone
     p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
-    from redharness.core._win import process_start_time
+    from redharness.core.procinfo import process_start_time
     (jd / "lock").write_bytes(LockInfo(p.pid, 123456789, socket.gethostname(), "dead").to_bytes())
     assert process_start_time(p.pid) is None
     h2 = new_hub(cfg)

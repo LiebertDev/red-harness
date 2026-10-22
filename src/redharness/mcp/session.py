@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -447,6 +449,7 @@ class Hub:
         self.system_root = system_root  # source of the VC++ DLLs (None: the host's SystemRoot); a fake root in tests
         self.effects = TOOL_EFFECTS   # can be replaced in tests; the permission decision is derived from this table
         self._seh_edges: dict[str, tuple] = {}   # target SHA -> x64 scope-table exception edges (dataflow_slice)
+        self._unwind: dict[str, dataflow.UnwindData] = {}   # target SHA -> x64 unwind table (dataflow_slice)
         self.config = config
         self.engine = engine
         self.file_strings_time_budget_s: float | None = None  # None: analysis.file_strings.TIME_BUDGET_S (tests lower it)
@@ -923,13 +926,17 @@ class Hub:
                                        else target)
             call_args = dict(ca.data) if ca.ok and ca.data is not None else {}
             dis, decoded = self._with_except_blocks(s, r.data, edges)
+            if s.sha not in self._unwind:
+                self._unwind[s.sha] = dataflow.UnwindData(img, reader)
+            eh = tuple(self._unwind[s.sha].unmodelled((i.address for i in dis.items),
+                                                       lambda va: self._function_name_at(s, va)))
             key = (s.sha, s.engine_version, dis.function_address, _insn_digest(dis),
-                   tuple(sorted(call_args.items())), dataflow.SLICER_REV)
+                   tuple(sorted(call_args.items())), eh, dataflow.SLICER_REV)
             try:
                 res = dataflow.slice_function(dis, bits=64 if img.is64 else 32, target=target, image=view,
                                               operand=op, location=loc, size=n, max_steps=steps,
                                               engine=self.engine.name, cache_key=key, exc_edges=edges,
-                                              call_args=call_args)
+                                              call_args=call_args, eh_unmodelled=eh)
             except dataflow.SliceError as e:
                 raise ToolFailure(e.code, e.message) from e
             notes = self._section_notes(s, res.addresses, "instructions above", res.text)
@@ -964,6 +971,15 @@ class Hub:
         return self._reply(ev, out, cached, piece, shown={"offset": offset, "returned_chars": len(piece),
                                                           "total_chars": len(text),
                                                           "next_offset": nxt if nxt < len(text) else None})
+
+    def _function_name_at(self, s: _Session, va: int) -> str | None:
+        """The name the engine has for the function that starts at `va` (None: no function there or an automatic
+        name, which names nothing)."""
+        r = self.engine.disassemble(s.sha, va, count=1)
+        if not (r.status in (Status.OK, Status.PARTIAL) and r.data is not None) or r.data.function_address != va:
+            return None
+        n = r.data.function_name or ""
+        return None if re.match(r"^(sub|fun|loc|j_sub|thunk_fun)_?[0-9a-f]+$", n, re.I) else n
 
     def _with_except_blocks(self, s: _Session, dis: Any, edges: tuple) -> tuple[Any, list[str]]:
         """Adds the __except blocks of this function's scope-table edges that the engine's function body does not
@@ -1336,6 +1352,9 @@ class Hub:
         try:  # SAME path as every runner: VC++ DLLs next to the target (does not widen the scope; names+SHA are in the reply/evidence)
             support = vc_runtime_files(s.cas.path_for(run_sha), system_root=self.system_root)
         except SupportFilesMissing as e:   # never run silently without the DLLs (the target would not start, 0xC0000135)
+            if sys.platform != "win32" and self.system_root is None:   # no Windows host: not a missing redistributable
+                raise ToolFailure("SANDBOX_UNAVAILABLE", "run_controlled needs Windows Sandbox and the host's VC++ runtime, "
+                                  "which exist only on Windows; no run was made.") from e
             raise ToolFailure("SUPPORT_FILES_MISSING", f"Runtime DLLs for the sandbox are missing on the host ({e}); "
                               "no run was made. Ask the user to install the VC++ redistributable.") from e
         run = sandbox_run(run_sha, s.manifest, inputs, float(timeout_s), cfg=self.config, backend=self.sandbox_backend,

@@ -17,7 +17,9 @@ from mcp.types import ToolAnnotations
 from ..config import Config
 from ..engines.base import Engine
 from ..sandbox.backend import SandboxBackend
+from .registry import TOOL_NAMES, spec
 from .session import Hub, ToolFailure
+from .toolspec import ToolSpec
 
 INSTRUCTIONS = (
     "Red Harness: evidence-bound static reverse engineering of a binary the user owns or is authorized to test. "
@@ -44,13 +46,14 @@ INSTRUCTIONS = (
     "are proven only by run_controlled, not by a value appearing in the code."
 )
 
-TOOL_NAMES = ("target_open", "functions_list", "decompile", "disassemble", "dataflow_slice", "xrefs", "strings",
-              "read_bytes", "file_strings", "imports", "run_controlled", "compute", "emulate", "captured_region",
-              "claim_add", "unknown_record", "coverage", "report_build")
+# The tool list comes from the registry (mcp/registry.py): one ToolSpec per tool, in listing order.
 MAX_TOOLS = 20   # cap on the number of tools (model context); checked by tests/unit/test_mcp_server.py
 
-_RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-_RW = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+
+def annotations_for(ts: ToolSpec) -> ToolAnnotations:
+    """MCP annotations of a tool, derived from its spec (the effect flags give idempotent / open-world)."""
+    return ToolAnnotations(readOnlyHint=ts.read_only, destructiveHint=False,
+                           idempotentHint=ts.effects.idempotent, openWorldHint=ts.effects.network)
 
 
 def build_server(config: Config, engine: Engine,
@@ -66,13 +69,22 @@ def build_server(config: Config, engine: Engine,
 
     mcp = FastMCP("red-harness", instructions=INSTRUCTIONS, lifespan=lifespan)
 
+    registered: list[str] = []
+
+    def tool(fn):
+        """Register `fn` as the MCP tool of its own name. The name must have a ToolSpec (KeyError otherwise, when the
+        server is built); annotations come from the spec."""
+        registered.append(fn.__name__)
+        return mcp.tool(annotations=annotations_for(spec(fn.__name__)))(fn)
+
     async def run(name: str, args: dict, fn: Callable[[], dict]) -> dict:
+        spec(name)   # a journal / effect-check name that is not a registered tool fails loudly
         try:
             return await anyio.to_thread.run_sync(lambda: hub.call(name, args, fn))
         except ToolFailure as e:
             raise ToolError(f"{e.code}: {e.message}") from e
 
-    @mcp.tool(annotations=_RW)
+    @tool
     async def target_open(target_path: str, manifest_path: str, fixed_target_path: str | None = None,
                           detail: str = "summary") -> dict:
         """Open a target binary for analysis. Requires a scope manifest (JSON, schema rh.scope/1) with the target's
@@ -98,7 +110,7 @@ def build_server(config: Config, engine: Engine,
         return await run("target_open", args,
                          lambda: hub.target_open(target_path, manifest_path, fixed_target_path, detail))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def functions_list(offset: int = 0, limit: int = 100, detail: str = "full") -> dict:
         """List functions (VA, name, size), paginated (limit <= 200; response is also size-capped; use next_offset).
         detail='summary' returns counts + a short preview and the ev_ id (full page stays in the ledger).
@@ -106,7 +118,7 @@ def build_server(config: Config, engine: Engine,
         return await run("functions_list", {"offset": offset, "limit": limit, "detail": detail},
                          lambda: hub.functions_list(offset, limit, detail))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def decompile(function: str | int, offset: int = 0, max_chars: int = 12000,
                         detail: str = "full") -> dict:
         """Decompile one function given its address (VA, e.g. '0x140001250') or name. Long output is paged with
@@ -116,7 +128,7 @@ def build_server(config: Config, engine: Engine,
                                        "detail": detail},
                          lambda: hub.decompile(function, offset, max_chars, detail))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def disassemble(address: str | int, end: str | int | None = None, count: int = 100,
                           detail: str = "full") -> dict:
         """Disassemble from a virtual address (hex, e.g. '0x140001250'): up to `count` instructions (<= 500) or the
@@ -127,7 +139,7 @@ def build_server(config: Config, engine: Engine,
         return await run("disassemble", {"address": address, "end": end, "count": count, "detail": detail},
                          lambda: hub.disassemble(address, end, count, detail))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def dataflow_slice(address: str | int, operand: int | None = None, location: str | None = None,
                              size: int | None = None, max_steps: int = 200, detail: str = "summary",
                              offset: int = 0, max_chars: int = 12000) -> dict:
@@ -146,13 +158,13 @@ def build_server(config: Config, engine: Engine,
                          lambda: hub.dataflow_slice(address, operand, location, size, max_steps, detail, offset,
                                                     max_chars))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def xrefs(address: str | int, direction: str = "to", limit: int = 100) -> dict:
         """Cross-references to ('to') or from ('from') a virtual address. Limited to <= 200; PARTIAL if more exist."""
         return await run("xrefs", {"address": address, "direction": direction, "limit": limit},
                          lambda: hub.xrefs(address, direction, limit))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def strings(pattern: str | None = None, offset: int = 0, limit: int = 100,
                       detail: str = "full") -> dict:
         """List recognised strings (VA, raw engine kind, enc=<ascii|utf-16le|utf-32le|utf-8|8bit>, value), optionally filtered by a regex (re.search); paginated
@@ -160,7 +172,7 @@ def build_server(config: Config, engine: Engine,
         return await run("strings", {"pattern": pattern, "offset": offset, "limit": limit, "detail": detail},
                          lambda: hub.strings(pattern, offset, limit, detail))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def read_bytes(address: str | int | None = None, rva: str | int | None = None,
                          section: str | None = None, offset: str | int = 0, length: int = 64,
                          view: str | list[str] | None = None, detail: str = "full") -> dict:
@@ -179,7 +191,7 @@ def build_server(config: Config, engine: Engine,
                                         "length": length, "view": view, "detail": detail},
                          lambda: hub.read_bytes(address, rva, section, offset, length, view, detail))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def file_strings(pattern: str | None = None, min_length: int = 4,
                            encodings: list[str] | None = None, max_hits: int = 1000,
                            detail: str = "full") -> dict:
@@ -197,7 +209,7 @@ def build_server(config: Config, engine: Engine,
                 "detail": detail}
         return await run("file_strings", args, lambda: hub.file_strings(pattern, min_length, encodings, max_hits, detail))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def imports(dll: str | None = None, offset: int = 0, limit: int = 1000, detail: str = "full") -> dict:
         """List the target's import table (static; read from the PE file, no engine, no execution). One line per
         symbol, module-qualified: `<IAT slot VA, hex> <dll>!<name>` (e.g. `0x140001000 kernel32.dll!CreateFileW`);
@@ -209,8 +221,7 @@ def build_server(config: Config, engine: Engine,
         return await run("imports", {"dll": dll, "offset": offset, "limit": limit, "detail": detail},
                          lambda: hub.imports(dll, offset, limit, detail))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False,
-                                          openWorldHint=False))
+    @tool
     async def run_controlled(cases: list[dict[str, Any]], timeout_s: float = 10.0,
                              observe: dict[str, Any] | None = None, detail: str = "summary",
                              target: str = "original") -> dict:
@@ -252,8 +263,7 @@ def build_server(config: Config, engine: Engine,
             args["target"] = target
         return await run("run_controlled", args, lambda: hub.run_controlled(cases, timeout_s, observe, detail, target))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True,
-                                          openWorldHint=False))
+    @tool
     async def compute(code: str, inputs: list[dict[str, Any]] | None = None, timeout_s: float = 30.0) -> dict:
         """Run YOUR OWN Python 3.12 code (stdlib only; no network, no files) in the isolated Windows Sandbox for work you
         cannot do by hand: a search, a decode, a hash, a keygen inversion. Needs 'compute' in the scope manifest.
@@ -277,8 +287,7 @@ def build_server(config: Config, engine: Engine,
         return await run("compute", {"code": code, "inputs": inputs, "timeout_s": timeout_s},
                          lambda: hub.compute(code, inputs, timeout_s))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True,
-                                          openWorldHint=False))
+    @tool
     async def emulate(function: str | int, args: list[Any] | None = None, convention: str | None = None,
                       outputs: list[dict[str, Any]] | None = None, max_instructions: int = 2_000_000,
                       timeout_s: float = 10.0, stack_size: int = 1_048_576, detail: str = "full",
@@ -323,7 +332,7 @@ def build_server(config: Config, engine: Engine,
                                              stack_size, detail, buffers, memory, registers, output_registers,
                                              end))
 
-    @mcp.tool(annotations=_RW)
+    @tool
     async def captured_region(evidence_id: str | None = None, event: int | None = None, sha256: str | None = None,
                               size: int | None = None, address: str | int | None = None,
                               offset: str | int = 0, length: int | None = None,
@@ -358,7 +367,7 @@ def build_server(config: Config, engine: Engine,
                          lambda: hub.captured_region(evidence_id, event, sha256, size, address, offset, length, view,
                                                      min_length, encodings, max_strings, count, arch, detail))
 
-    @mcp.tool(annotations=_RW)
+    @tool
     async def claim_add(text: str, evidence_ids: list[str] | None = None,
                         atoms: list[dict[str, Any]] | None = None, kind: str | None = None,
                         polarity: str = "present", requested: str = "SUPPORTED",
@@ -412,7 +421,7 @@ def build_server(config: Config, engine: Engine,
                          lambda: hub.claim_add(text, evidence_ids, atoms, kind, polarity, requested, values,
                                                supersedes, interpretation))
 
-    @mcp.tool(annotations=_RW)
+    @tool
     async def unknown_record(question: str, reason: str, address: str | int | None = None,
                              evidence_ids: list[str] | None = None, severity: str = "medium") -> dict:
         """Record a question you could not answer instead of guessing: question, reason (why: tool failed, output
@@ -424,7 +433,7 @@ def build_server(config: Config, engine: Engine,
         return await run("unknown_record", args,
                          lambda: hub.unknown_record(question, reason, address, evidence_ids, severity))
 
-    @mcp.tool(annotations=_RO)
+    @tool
     async def coverage() -> dict:
         """What was examined so far, derived from the ledger and call journal (not from your own claims):
         tools run, functions and regions examined, listings and whether they were exhausted, truncated /
@@ -432,13 +441,15 @@ def build_server(config: Config, engine: Engine,
         it is never 'clean': missing coverage is unknown, not absence."""
         return await run("coverage", {}, hub.coverage)
 
-    @mcp.tool(annotations=_RW)
+    @tool
     async def report_build() -> dict:
         """Re-verify every claim against its evidence and build a Markdown report. Findings = verified claims only;
         claims without evidence, whose values are not in the evidence, or that assert program behavior without controlled-run evidence appear only under 'Unverified hypotheses' (superseded claims are left out). Returns counts: unsupported_claims counts only unsupported claims that reached the findings (must always be 0); hypotheses are counted separately (hypotheses_*). The report
         has a 'Coverage and unknowns' section; incomplete coverage is never reported as clean."""
         return await run("report_build", {}, hub.report_build)
 
+    if registered != list(TOOL_NAMES):   # a spec without a handler (or the reverse) fails at build, not in a run
+        raise RuntimeError(f"tool registry and MCP handlers differ: {registered} != {list(TOOL_NAMES)}")
     return mcp, hub
 
 

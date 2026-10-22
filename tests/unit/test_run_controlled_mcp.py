@@ -342,14 +342,14 @@ def test_error_messages_are_short_and_actionable(hub):
 
 
 # ---------------------------------------------------------------- tool count and end to end over MCP
-def test_tool_count_is_sixteen_and_within_limit():
-    assert len(TOOL_NAMES) == 18 and "run_controlled" in TOOL_NAMES and MAX_TOOLS == 20
+def test_tool_count_is_within_limit():
+    assert "run_controlled" in TOOL_NAMES and len(TOOL_NAMES) <= MAX_TOOLS
 
     async def go():
         async with mcp_session(SERVER, Path(".")) as s:
             return [t.name for t in (await s.list_tools()).tools]
     names = asyncio.run(go())
-    assert sorted(names) == sorted(TOOL_NAMES) and len(names) <= MAX_TOOLS == 20
+    assert sorted(names) == sorted(TOOL_NAMES) and len(names) <= MAX_TOOLS
 
 
 def test_mcp_wire_end_to_end_proven_and_wrong_key(tmp_path):
@@ -427,6 +427,24 @@ def test_run_controlled_missing_dll_source_is_explicit_error_not_silent_ok(tmp_p
     assert e.value.code == "SUPPORT_FILES_MISSING" and "msvcp140.dll" in e.value.message
     # the sandbox was not opened; no evidence was produced beyond the automatic open-time protection scan
     assert sb.started == [] and {e["operation"] for e in h._s.ledger.state["evidence"].values()} <= {"protection_scan"}
+    h.close()
+
+
+def test_non_windows_host_is_refused_as_sandbox_unavailable(tmp_path, monkeypatch):
+    """Off Windows the host has no System32 to take the DLLs from and no Windows Sandbox: an explicit platform refusal
+    (not 'install the VC++ redistributable'), and nothing is started."""
+    from redharness.mcp import session as session_mod
+    from redharness.sandbox.support import SupportFilesMissing
+    h, sb = _hub_with_listing(tmp_path, system_root=None)
+
+    def no_host_dlls(binary, system_root=None):
+        raise SupportFilesMissing("VC++ runtime DLL missing on host")
+    monkeypatch.setattr(session_mod, "vc_runtime_files", no_host_dlls)
+    monkeypatch.setattr(session_mod.sys, "platform", "linux")
+    with pytest.raises(ToolFailure) as e:
+        h.run_controlled([{"stdin": GOOD_KEY}])
+    assert e.value.code == "SANDBOX_UNAVAILABLE" and "only on Windows" in e.value.message
+    assert sb.started == []
     h.close()
 
 

@@ -523,7 +523,8 @@ Exception edges (closes the "no exception-dispatch edges" limit where the data i
   in its function body) and Ghidra (block decoded on demand), the `__except` blocks (8 per function) are analysed;
   inside the first one `ebx` is `0x0 definite` from its own `xor ebx, ebx`; the same slice without the edges reports
   the block as not reachable and taints its join.
-- Follow-up, not built: C++ EH continuations (FuncInfo / FH4 tables) and engine-provided handler edges.
+- Follow-up, not built: C++ EH continuations (FuncInfo / FH4 tables) and engine-provided handler edges. Until then
+  the conservative rule of 6.4 applies to every handler this section does not model.
 
 Callee-writable parameter areas (closes "stack arguments above the home space and x86 pushed arguments"):
 - The engine reports, per call instruction, how many bytes of stack parameters the callee's prototype occupies from
@@ -538,3 +539,63 @@ Callee-writable parameter areas (closes "stack arguments above the home space an
   system DLL, and the documented x86 areas for `IsDebuggerPresent`, `GetTickCount`, `srand`, `GetModuleHandleA`,
   `GetProcAddress`, `strcspn` in the 32-bit benchmark target; the slice after the `CreateFileW` call shows those
   0x18 bytes non-definite with the reason "parameter area of call ... 0x38 bytes".
+
+### 6.4 Exception handlers the slicer does not model (slicer revision 5)
+
+Soundness gap closed (EH edge analysis, 2026-10-22): a catch funclet is not part of the parent's decoded
+stream. It can write a frame slot and resume the parent at an address the slicer has no edge for, so in
+`mov [rbp-4],0; call may_throw; jmp join; join: mov eax,[rbp-4]` with a catch that stores 1 and resumes at `join` the
+CFG alone reports `eax = 0 definite`. Option (c) of the analysis (conservative fallback) is implemented; parsing the
+C++ / x86 tables (option (a)) stays the way to get precision back.
+
+Which functions (`analysis/dataflow/eh.py`; an `eh=unmodelled` token in the `flow:` line, `eh_unmodelled` in the
+result summary):
+- x64: any `RUNTIME_FUNCTION` that covers a decoded instruction of the function and whose `UNWIND_INFO` (indirect and
+  chained entries followed, 8 hops) has `UNW_FLAG_EHANDLER` / `UHANDLER`, unless the handler is one of
+  - `__C_specific_handler` / `__GSHandlerCheck_SEH` named through the import table with a readable scope table (the
+    modelled case of 6.3, unchanged);
+  - `__GSHandlerCheck` (stack cookie check only, it never resumes);
+  - a C++ frame handler (`__CxxFrameHandler`/`2`/`3`, `__GSHandlerCheck_EH`, `__CxxFrameHandler4`,
+    `__GSHandlerCheck_EH4`) whose FuncInfo has no try block (FH3: `nTryBlocks == 0` with a valid magic; FH4: header
+    byte without `TryBlockMap` 0x10 and without `isCatch` 0x01): only destructors run while the exception unwinds the
+    frame, control never returns into it. Layout checked against `msvcp140.dll` / `mfc140u.dll` (every FH4 header with
+    0x10 set points to a try map with a small positive count).
+  Everything else is not modelled: other or unnamed handlers (a statically linked handler is named through the
+  engine's name for the function at its address; an automatic `sub_`/`FUN_` name names nothing), a statically linked
+  `__C_specific_handler` (no scope table is parsed for it), unreadable unwind data or scope table, an unreadable exception directory (every function), a function outside the rows read from a truncated exception directory (slicer revision 6), a chain that cannot
+  be followed. Reasons read like `C++ EH, handler __CxxFrameHandler4`.
+- x86: images carry no unwind tables, so the registration is recognised in the decoded instructions: a `fs:[0]`
+  operand (IDA `large fs:0`, Ghidra `FS:[0x0]`) or a reference to `_SEH_prolog*`, `_EH_prolog*`, `_except_handler3/4`,
+  `_CxxFrameHandler*`, `_local_unwind`/`_global_unwind` in the text or symbol of an operand. Limit: a prolog helper
+  that the engine shows only as `sub_...` and that is reached without any of these markers is not detected (stripped
+  static CRT); such a function keeps the pre-5 behaviour (no handler edges).
+
+Rule: the handler may run at any point after the function is entered and resume at any instruction (the continuation
+address is in the funclet's code, not known), so no value that a handler could have changed may be reported definite
+at any instruction, including the very next one. Only values that no handler can change stay definite: immediate
+operands, read-only image bytes read directly (`mov eax, [abs]`), and frame addresses in `rsp`/`rbp` (an unwinder
+restores them; the same assumption as the not-analysed-block taint). Implemented in the transfer function:
+- a frame byte is written as non-definite (`State.put`: a definite byte keeps `last=0x..` as a candidate, a spilled
+  frame address is dropped and counted as escaped);
+- after every instruction each register holding a constant or a byte mix becomes unknown, and so does a frame address
+  in any register other than `rsp`/`rbp` (its target is counted as escaped);
+- the reason `exception handler not modelled (<reasons>)` is part of every such value (`unknown:` line) and of the
+  coverage (`coverage: partial reasons=...`), and an `assumption:` line explains the rule.
+Why it is the narrowest sound rule available without the handler code: the funclet can write any slot of the
+parent frame (it reaches it through the establisher frame) and can resume at any instruction, so for every read some
+dynamic path exists on which the slot differs from the CFG's reaching definition; narrowing by slot, by block or by
+distance to a call would each need the try ranges and continuation addresses of the tables that are not parsed.
+The rule therefore keeps what is provable (provenance `writes ...` lines, candidates, immediates) and drops values.
+
+Verifier: nothing changes. The new lines are `unknown:` lines (never conditional), the byte candidates are the
+existing `candidate ... NOT definite` / `last=0x..` lines (conditional since version 23), and no new assumption tag is
+introduced, so a claim cannot reach SUPPORTED from a value in such a function (`VALUE_ONLY_CONDITIONAL` applies to the
+candidates; a `writes ... value=` immediate on the write instruction itself stays unconditional, it is a fact about
+that instruction).
+
+Known residuals (not changed by this rule): filter funclets with a non-constant filter and `__finally` funclets of a
+modelled `__C_specific_handler` function can still write the frame on the dispatch path without the slicer seeing
+it; a C++ function whose FuncInfo is not readable is treated as not modelled, and a catch funclet sliced as its own
+function is not analysed against the parent's frame. Precision cost: in a not-modelled function every read of a
+local after its write is unknown (candidates remain); C++ functions with only destructor unwinding and `/GS`-only
+functions are unaffected.

@@ -50,6 +50,12 @@ def probe_worker(write_dir: str) -> dict:
 
 
 def _run(job_obj: dict, timeout: float) -> dict:
+    if sys.platform != "win32":
+        # The worker's hardening (Low integrity, one-process Job Object) exists only on Windows. Refuse rather than
+        # run emulation unhardened.
+        raise WorkerError("EMULATE_PLATFORM_UNSUPPORTED",
+                          "emulate needs the Windows worker hardening (Low integrity level, one-process Job Object), "
+                          "which is not available on this platform. No code was run.")
     job = json.dumps(job_obj).encode()
     # one active process: the worker cannot start children; the worker lowers itself to Low integrity (worker.py)
     r = run_bounded(_argv(), timeout_s=timeout, memory_limit_bytes=MEMORY_LIMIT, input_bytes=job,

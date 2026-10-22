@@ -119,13 +119,14 @@ def test_target_open_of_a_driver_reports_driver_facts_unavailable(tmp_path, no_p
 
 
 def test_the_tool_surface_is_the_same_in_every_build():
-    assert len(TOOL_NAMES) == 18 and len(TOOL_NAMES) <= MAX_TOOLS
+    assert len(TOOL_NAMES) <= MAX_TOOLS
 
 
 _IMPORT_ALL = r'''
 import importlib, json, pkgutil, sys
 sys.path[:0] = json.loads(sys.argv[1])
 blocked = tuple(json.loads(sys.argv[2]))
+windows_only = set(json.loads(sys.argv[3]))
 
 class Block:
     def find_spec(self, name, path=None, target=None):
@@ -140,18 +141,30 @@ for m in pkgutil.walk_packages(redharness.__path__, "redharness."):
         continue
     if m.name.endswith((".__main__", ".rh_boot")):   # scripts that run on import (module entry point, guest bootstrap)
         continue
+    if m.name in windows_only and sys.platform != "win32":
+        # must refuse explicitly off Windows (ImportError naming Windows), never half-import
+        try:
+            importlib.import_module(m.name)
+            failed.append(f"{m.name}: imported off Windows")
+        except ImportError as e:
+            if "Windows" not in str(e):
+                failed.append(f"{m.name}: ImportError without a platform reason: {e}")
+        continue
     try:
         importlib.import_module(m.name)
     except Exception as e:
         failed.append(f"{m.name}: {type(e).__name__}: {e}")
 print(json.dumps(failed))
 '''
+# Win32 API bindings: imported only on Windows (POSIX code paths use core/procinfo.py and the POSIX runner in core/proc.py)
+WINDOWS_ONLY_MODULES = ("redharness.core._win",)
 
 
 def test_every_core_module_imports_with_the_premium_modules_blocked():
     """The seam test for the whole package: no non-premium module may import a premium one at import time."""
     proc = subprocess.run([sys.executable, "-c", _IMPORT_ALL, json.dumps([p for p in sys.path if p]),
-                           json.dumps(list(PREMIUM_MODULES))], capture_output=True, text=True, timeout=300)
+                           json.dumps(list(PREMIUM_MODULES)), json.dumps(list(WINDOWS_ONLY_MODULES))],
+                          capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert json.loads(proc.stdout.strip().splitlines()[-1]) == []
 

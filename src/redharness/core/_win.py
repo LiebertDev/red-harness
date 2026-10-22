@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 
 if sys.platform != "win32":  # pragma: no cover
-    raise ImportError("redharness.core is supported on Windows only")
+    raise ImportError("redharness.core._win (Win32 API bindings) is available on Windows only; "
+                      "other platforms use core.procinfo and the POSIX runner in core.proc")
 
 import ctypes
 from ctypes import wintypes

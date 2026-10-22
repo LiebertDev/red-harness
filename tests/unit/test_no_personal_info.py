@@ -25,7 +25,8 @@ EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-
 # aquynh@gmail.com: the contact address printed in Capstone's own upstream licence text (licenses/capstone-*), kept unmodified
 EMAIL_ALLOW = ("users.noreply.github.com", "example.com", "aquynh@gmail.com")
 # non-personal profile directories and variable/placeholder forms
-GENERIC_NAMES = {"public", "default", "default user", "all", "all users", "defaultuser0", "<name>", "name", "user", "username"}
+GENERIC_NAMES = {"public", "default", "default user", "all", "all users", "defaultuser0", "<name>", "name", "user", "username",
+                 "runner", "runneradmin"}   # the GitHub-hosted CI runner accounts (an ordinary word, not a person)
 
 BINARY_EXT = {".exe", ".dll", ".sys", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".zip", ".pdf", ".i64", ".pyc", ".bin"}
 
@@ -101,6 +102,7 @@ def test_detects_email_and_username():
     assert scan_text("write to foo.bar" + "@" + "mail.invalid")  # built at run time: no real address in the source
     assert scan_text("hello zekeriya here", username="zekeriya")
     assert not scan_text("hello", username="zekeriya")
+    assert not scan_text("the test runner", username="runner")   # CI account name, not personal
 
 
 def _staged_repo(tmp_path: Path, content: str) -> Path:

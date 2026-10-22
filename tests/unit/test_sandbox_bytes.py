@@ -5,6 +5,7 @@ import ctypes
 import hashlib
 import re
 import subprocess
+import sys
 from ctypes import wintypes
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def target(tmp_path):
     return p
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="MSVC CRT command-line parsing (CommandLineToArgvW) is Windows only")
 def test_runner_sends_exact_stdin_and_argv_bytes(tmp_path, target):
     cfg = Config.load(tmp_path / "data")
     scope = ScopeManifest(SHA, "test", "owner", "test", ("run_controlled",), None, "")
@@ -70,6 +72,7 @@ def test_runner_sends_exact_stdin_and_argv_bytes(tmp_path, target):
     assert sent[1] == b"a\r\nb\r\n"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="MSVC CRT command-line parsing (CommandLineToArgvW) is Windows only")
 def test_runner_argv_line_roundtrips_through_crt_parsing():
     for c in CASES:
         assert _crt_argv(subprocess.list2cmdline(list(c.argv))) == list(c.argv)

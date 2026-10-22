@@ -13,73 +13,17 @@ Rules (fail-closed):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import fields, replace
 from typing import Any, Mapping
 
 from ..scope.manifest import ScopeManifest
+from .registry import SPECS
+from .toolspec import EFFECT_REQUIRES, ToolEffects
 
 
-@dataclass(frozen=True)
-class ToolEffects:
-    reads_files: bool = False          # reads the target file / engine output
-    writes_files: bool = False         # writes files OUTSIDE the job store (journal, CAS, report) (e.g. the sandbox work folder)
-    launches_process: bool = False     # starts a process other than the operator's engine
-    executes_foreign_code: bool = False  # runs the target / foreign code (run_controlled)
-    executes_model_code: bool = False  # runs code written by the model (isolated) (compute); needs a separate permission
-    emulates_target_code: bool = False  # interprets the target's code in a CPU emulator (emulate); never runs it natively
-    instruments_process: bool = False  # a debugger/hook attaches to the target process inside the guest (observe)
-    captures_memory: bool = False      # target process memory is read and digested (observe memory channel)
-    network: bool = False              # network access
-    mutates_target: bool = False       # modifies the target binary (patch)
-    mutates_session: bool = False      # adds evidence/claim/unknown records (append-only writes to the job store)
-    idempotent: bool = True            # the same arguments give the same result/record again
-
-    def active(self) -> list[str]:
-        """Active effects that may need permission (excluding the idempotent and pure record/read flags)."""
-        return [f.name for f in fields(self) if f.name in EFFECT_REQUIRES and getattr(self, f.name)]
-
-
-# Effect -> any one of the manifest operations that allow this effect. Empty tuple: never allowed.
-EFFECT_REQUIRES: Mapping[str, tuple[str, ...]] = {
-    "executes_foreign_code": ("run_controlled",),
-    "executes_model_code": ("compute",),   # default DENY: the manifest must explicitly say "compute" (run_controlled is not enough)
-    "emulates_target_code": ("emulate",),   # default DENY: run_controlled / compute do not imply it
-    "launches_process": ("run_controlled", "compute", "emulate"),
-    "writes_files": ("run_controlled", "patch_poc", "compute"),
-    "mutates_target": ("patch_poc",),
-    "instruments_process": ("dynamic_observe",),   # default DENY
-    "captures_memory": ("dynamic_memory",),
-    "network": (),
-}
 BASE_OPERATION = "static"
 
-_READ = ToolEffects(reads_files=True, mutates_session=True)
-
-TOOL_EFFECTS: Mapping[str, ToolEffects] = {
-    "target_open": ToolEffects(reads_files=True, mutates_session=True),
-    "functions_list": _READ,
-    "decompile": _READ,
-    "disassemble": _READ,
-    "dataflow_slice": _READ,   # harness slice over the engine's disassembly + the CAS copy: same effects as disassemble
-    "xrefs": _READ,
-    "strings": _READ,
-    "read_bytes": _READ,   # reads the target PE file (CAS copy), does not call the engine: no new permission needed
-    "imports": _READ,      # PE import/delay-import tables parsed from the CAS copy (engine-free): no new permission needed
-    "file_strings": _READ,  # raw ASCII/UTF-16LE file scan (CAS copy, engine-free, bounded): no new permission needed
-    "run_controlled": ToolEffects(reads_files=True, writes_files=True, launches_process=True,
-                                  executes_foreign_code=True, mutates_session=True, idempotent=False),
-    "compute": ToolEffects(reads_files=True, writes_files=True, launches_process=True, executes_model_code=True,
-                           mutates_session=True),  # deterministic: same code+input = same ev_
-    "emulate": ToolEffects(reads_files=True, launches_process=True, emulates_target_code=True,
-                           mutates_session=True),  # bounded worker process on the host; same request = same ev_
-    # views of bytes a stored dynamic observation captured: reads the stored document only (CAS), runs nothing; it shows
-    # target memory, so it needs the memory permission the capture needed (dynamic_memory), not run_controlled again
-    "captured_region": ToolEffects(reads_files=True, captures_memory=True, mutates_session=True),
-    "claim_add": ToolEffects(mutates_session=True),
-    "unknown_record": ToolEffects(mutates_session=True),
-    "coverage": ToolEffects(),
-    "report_build": ToolEffects(mutates_session=True),
-}
+TOOL_EFFECTS: Mapping[str, ToolEffects] = {s.name: s.effects for s in SPECS}   # the registry (mcp/registry.py) is the source
 
 
 # Effect rows that are not tools: run_controlled with `observe` (the effect depends on the argument). Hub.call checks the

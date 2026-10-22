@@ -186,7 +186,7 @@ def _kill_at_marker(job_dir, kill_at, tmp_path):
         assert p.poll() is None, f"worker finished before the marker: {p.stderr.read().decode()}"
         assert time.monotonic() < deadline, "marker file did not appear"
         time.sleep(0.01)
-    subprocess.run(["taskkill", "/F", "/PID", str(p.pid)], capture_output=True, check=True)
+    p.kill()   # hard kill (TerminateProcess on Windows, SIGKILL elsewhere)
     p.wait(30)
     marker.unlink()
 

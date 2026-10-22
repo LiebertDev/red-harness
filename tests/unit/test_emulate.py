@@ -5,6 +5,7 @@ the known answer is the arithmetic of that code. The real-binary proof is tests/
 """
 import json
 import struct
+import sys
 
 import pytest
 
@@ -398,6 +399,7 @@ def test_missing_emulator_is_reported_and_nothing_runs(tmp_path, monkeypatch):
         hub.close()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the worker hardening (Low integrity, Job Object) is Windows only")
 def test_worker_process_gives_the_same_result_as_in_process(tmp_path):
     pytest.importorskip("unicorn")
     import hashlib
@@ -456,10 +458,14 @@ def test_emulate_over_the_real_stdio_protocol(tmp_path):
             return await call(s, "emulate", function=hex(B64 + 0x1000), args=[{"hex": ENC.hex()}, len(ENC)],
                               outputs=[{"arg": 0, "length": len(ENC), "view": "ascii"}])
     err, r = asyncio.run(go())
+    if sys.platform != "win32":   # no hardened worker off Windows: an explicit refusal over the wire, nothing ran
+        assert err and "EMULATE_PLATFORM_UNSUPPORTED" in str(r) and "No code was run" in str(r), r
+        return
     assert not err, r
     assert r["evidence_id"].startswith("ev_") and r["deterministic"] and '"kernel32.dll"' in r["content"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the worker hardening (Low integrity, Job Object) is Windows only")
 def test_worker_runs_at_low_integrity_and_cannot_write_or_spawn(tmp_path):
     """Real worker process (no emulation): Low integrity, no file in a normal (Medium) folder such as the test's temp
     folder or the repository, no child process (one-process job). A folder explicitly labelled Low is the control."""
@@ -479,3 +485,16 @@ def test_worker_runs_at_low_integrity_and_cannot_write_or_spawn(tmp_path):
     low.mkdir()
     subprocess.run(["icacls", str(low), "/setintegritylevel", "L"], check=True, capture_output=True)
     assert probe_worker(str(low))["file_created"] is True      # the write probe itself works where Low may write
+
+
+def test_worker_refuses_cleanly_where_hardening_is_unavailable(monkeypatch):
+    """Outside Windows the worker is not started at all: EMULATE_PLATFORM_UNSUPPORTED, never an unhardened run."""
+    from redharness.emulate import host
+    monkeypatch.setattr(host.sys, "platform", "linux")
+    started = []
+    monkeypatch.setattr(host, "run_bounded", lambda *a, **k: started.append(1))
+    with pytest.raises(host.WorkerError) as e:
+        host.run_in_worker("x", "0" * 64, {"timeout_ms": 10})
+    assert e.value.code == "EMULATE_PLATFORM_UNSUPPORTED" and started == []
+    with pytest.raises(host.WorkerError):
+        host.probe_worker(".")

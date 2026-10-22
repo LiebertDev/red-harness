@@ -7,6 +7,7 @@ host's ntdll.dll is tests/heavy/test_emulate_real.py.
 import hashlib
 import json
 import struct
+import sys
 
 import pytest
 
@@ -359,6 +360,7 @@ def test_verifier_v20_requires_the_stop_to_match_the_request(tmp_path, params_en
     assert ("EMULATION_RECORD_INVALID" in v.codes) is (not valid)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the hardened emulate worker is Windows only; the off-Windows refusal over stdio is test_emulate.py::test_emulate_over_the_real_stdio_protocol")
 def test_v2_fields_over_the_real_stdio_protocol(tmp_path):
     """The registered MCP tool passes the version 2 fields through (stdio client -> server -> worker -> evidence)."""
     pytest.importorskip("unicorn")

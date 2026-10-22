@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,20 @@ version = "0.1.0"
 description = "Red Harness: a defensive, evidence-bound reverse-engineering analysis harness"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
+keywords = ["reverse-engineering", "mcp", "ghidra", "ida", "static-analysis", "security", "evidence"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
 # Official MCP Python SDK, pinned version (PyPI upload date 2026-09-07; a release at least 2 weeks old was chosen).
 dependencies = ["mcp==1.30.0"]
 
@@ -22,6 +35,11 @@ emulate = ["unicorn==2.1.4"]
 #   pip install "<IDA>\idalib\python\idapro-<version>-py3-none-any.whl"   (exact file name; pip rejects a wildcard)
 # py-activate-idalib.py is NOT run. Without idapro the IDA backend returns TOOL_MISSING ("unavailable").
 
+[project.urls]
+Homepage = "https://github.com/LiebertDev/red-harness"
+Source = "https://github.com/LiebertDev/red-harness"
+Issues = "https://github.com/LiebertDev/red-harness/issues"
+
 [project.scripts]
 rh = "redharness.cli:main"
 
@@ -29,7 +47,11 @@ rh = "redharness.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+# runtime files that are not Python modules: the Ghidra query script the engine runs, the Windows Sandbox guest script
+"redharness.engines.ghidra" = ["scripts/*.java"]
 "redharness.sandbox" = ["guest.ps1"]
+# the agent skill that `rh setup` installs
+"redharness.skill" = ["SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

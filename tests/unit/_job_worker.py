@@ -41,7 +41,10 @@ def main() -> None:
             nonlocal executed
             executed += 1
             if kill_at and executed == kill_at:
-                Path(marker).write_text(str(os.getpid()))
+                # Publish the marker only once it is closed: the parent may kill us as soon as it appears.
+                tmp = Path(marker).with_suffix(".tmp")
+                tmp.write_text(str(os.getpid()))
+                tmp.replace(marker)
                 time.sleep(600)
             time.sleep(sleep_s)
             return {"i": i, "v": i * i}

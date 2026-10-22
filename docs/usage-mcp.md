@@ -207,14 +207,19 @@ recorded per target and reused on reopen (`step_cached: true`).
   `deleted: <name>`. The guest's own result records are never reported. A clipped name ends in `…[clipped]` and the
   count is in `side_effects_names_clipped` (reply and evidence parameters).
 - Expected states give a short message: `SCOPE_DENIED` (not allowed in the manifest), `BUSY` (another sandbox is running: wait a minute and
-  try once), `SANDBOX_UNAVAILABLE`; case timeout/truncation/session error comes in the response with `message`, and that evidence cannot back PROVEN.
+  try once), `SANDBOX_UNAVAILABLE` (also on a non-Windows host: Windows Sandbox exists only on Windows, nothing runs); case timeout/truncation/session error comes in the response with `message`, and that evidence cannot back PROVEN.
 - To get PROVEN: try the value the model proposed/computed as a case; `claim_add(kind="runtime_behavior"|"bypass_poc",
   requested="PROVEN", evidence_ids=[<run ev_>], atoms=[{"type":"quote","evidence_id":<run ev_>,"text":"License valid"}],
   values=[{"value":"<input>","derived":true}])`. The value must be an input to that execution, and the result must be bound by a quote from the output.
   A wrong input cannot be PROVEN (quote not in output -> REJECTED; value not tried in that execution -> UNVERIFIED). Static evidence does not give PROVEN.
 - Behavior claims and static evidence: claims like "the program accepts input X", "input X is the accepted value" count as `kind=behavior`. A value APPEARING in decompile output does not show it is the accepted input (a decoy string can resemble the program's expected input). With static evidence alone the most you get is `UNVERIFIED` (`issues`: `BEHAVIOR_NEEDS_EXECUTION`, enters the report only under "Unverified hypotheses"); with `run_controlled` evidence + a quote from the output it becomes `PROVEN`. Sentences describing code (`kind=observation`: "main compares with strcmp against a decoy string") can still be `SUPPORTED` as before.
-- **Known risk (OPEN):** inside the sandbox the target can write a fake result to the output folder; this is not fixed in the code. Every execution evidence's
-  `limitations` field and the PROVEN response's `limitations` list state this. PROVEN = "observed in execution", not a guarantee of honesty.
+- **Output integrity (mitigated, not absolute):** mapped folders stay writable by everyone inside the guest, so a target can still write files to the output
+  folder; file access control is not trusted. Every result record is protected instead (`src/redharness/sandbox/integrity.py`): at session start the host writes a
+  one-time nonce, the guest reads it into memory and acknowledges it, the host deletes the file and only then does the target start, so the nonce is in no file
+  while the target runs; after the handshake the guest HMAC-authenticates the session, case and completion records. Each case MAC covers its ids, stdout/stderr SHA-256 and byte totals, exit code, timeout/truncation flags, launch-error hash, elapsed time and measured isolation fields; the host checks the record fields and MACs and compares the stream hashes with the bytes it read itself. A missing record or any verification failure is `INTEGRITY`: the session is rejected and no evidence is produced. Remaining limits: the trust root is nonce secrecy, so a guest-kernel or sandbox escape could still forge a record (not covered, not
+  measured); files the target writes are reported as `side_effects` and are never accepted as results; the target's output remains untrusted content, and
+  PROVEN = "observed in execution", not a guarantee of honesty. Every execution evidence's `limitations` field and the PROVEN response's `limitations` list state
+  this.
 - The verifier does not know the meaning of a quote: attaching a "License invalid" quote to a "valid" claim is not caught (the accept/reject pair
   check `CONTROL_PAIR_MISSING` is not implemented).
 
@@ -282,7 +287,7 @@ Design, scored alternatives and limits: `docs/design/emulation.md`. Short form:
   emulations differ), `EMU_OUTPUT_UNREADABLE`, `EMU_BAD_RETURN` (reached the return address without a real `ret` or with a
   stack the convention does not expect; a range that left before `end`), `EMU_LAYOUT` (unreadable import tables: nothing
   runs), `EMULATOR_MISSING`, `ARTIFACT_CHANGED` (the stored target copy no longer matches its SHA-256), `EMU_WORKER_FAILED`
-  (Low-IL hardening failed; nothing ran), `SCOPE_DENIED`, `OUT_OF_IMAGE`, `EMU_ARCH_UNSUPPORTED` (not x86/x64) and
+  (Low-IL hardening failed; nothing ran), `EMULATE_PLATFORM_UNSUPPORTED` (not Windows: the hardened worker is unavailable, nothing ran), `SCOPE_DENIED`, `OUT_OF_IMAGE`, `EMU_ARCH_UNSUPPORTED` (not x86/x64) and
   `BAD_ARGUMENT` (a request that does not fit the image: pointer, pre-write, `end`, buffer or limit). No API is ever
   stubbed.
 - Evidence: `authority=cpu-emulation`, `confidence=derived`, `environment.native_execution=false`; parameters hold the
@@ -315,8 +320,8 @@ Running the operator-configured analysis engine (IDA/Ghidra) does not count as a
 | `xrefs` | yes | - | - | - | - | - | - | - | - | - | yes | yes | static |
 | `strings` | yes | - | - | - | - | - | - | - | - | - | yes | yes | static |
 | `read_bytes` | yes | - | - | - | - | - | - | - | - | - | yes | yes | static |
-| `imports` | yes | - | - | - | - | - | - | - | - | - | yes | yes | static |
 | `file_strings` | yes | - | - | - | - | - | - | - | - | - | yes | yes | static |
+| `imports` | yes | - | - | - | - | - | - | - | - | - | yes | yes | static |
 | `run_controlled` | yes | yes | yes | yes | - | - | - | - | - | - | yes | - | static + run_controlled + run_controlled/compute/emulate + run_controlled/patch_poc/compute |
 | `compute` | yes | yes | yes | - | yes | - | - | - | - | - | yes | yes | static + compute + run_controlled/compute/emulate + run_controlled/patch_poc/compute |
 | `emulate` | yes | - | yes | - | - | yes | - | - | - | - | yes | yes | static + emulate + run_controlled/compute/emulate |
@@ -435,7 +440,7 @@ In the Core build both commands print a notice that the feature is not included 
 
 ## Limits (UNVERIFIED / open)
 - `patch_poc` is not a tool and will not be one (fix verification on a vendor-rebuilt binary instead); `evidence_get` is not in this skeleton; (`job_status` is carried by the `resume` block of `target_open`). There is no tool to resolve an unknown (`resolved`): if the same (tool, arguments) gives full output only the coverage gap closes, the recorded unknown stays open.
-- The claim verifier is version 17 (term binding; `exit_code` atom): technical terms in a claim must appear in the cited evidence, else UNVERIFIED `TERM_NOT_IN_EVIDENCE`.
+- The claim verifier is version 23 (term binding; `exit_code` atom): technical terms in a claim must appear in the cited evidence, else UNVERIFIED `TERM_NOT_IN_EVIDENCE`.
 - Kernel-mode targets are refused for execution (`KERNEL_TARGET_NO_USERMODE_RUN`).
 - Engines: IDA and a Ghidra 12.1.3 headless backend both exist (`src/redharness/engines/`); `rh mcp` starts the IDA engine by default; `rh mcp --engine ida|ghidra` selects one explicitly (unknown name or an engine that is not available exits non-zero, no silent fallback; the engine is passed in-process, no environment variable). Address translation: the server adds an RVA location next to the VA location in IDA evidence
   (if the image base is known); no file-offset location is produced.

@@ -7,7 +7,7 @@ import pytest
 
 from redharness.config import Config
 from redharness.core.journal import Journal, verify_file
-from redharness.mcp.server import TOOL_NAMES
+from redharness.mcp.server import MAX_TOOLS, TOOL_NAMES
 from redharness.scope.manifest import ScopeError, load_manifest, parse_manifest
 
 from .mcp_helpers import call, make_manifest, mcp_session
@@ -43,12 +43,20 @@ def open_args(env):
     return {"target_path": str(env["target"]), "manifest_path": str(env["manifest"])}
 
 
-def test_exactly_sixteen_tools():
+def test_tool_listing_matches_the_registry():
     async def go():
         async with mcp_session(SERVER, Path(".")) as s:
             return [t.name for t in (await s.list_tools()).tools]
     names = run(go())
-    assert sorted(names) == sorted(TOOL_NAMES) and len(names) == 18
+    assert sorted(names) == sorted(TOOL_NAMES)
+    assert len(names) <= MAX_TOOLS
+
+
+def test_tool_count_is_pinned():
+    # The single intentional pin of the tool count: adding or removing a tool is a surface change that needs a
+    # deliberate decision. The public docs state this number too; tests/unit/test_doc_drift.py keeps them equal to
+    # the registry, so both must move together.
+    assert len(TOOL_NAMES) == 18
 
 
 def test_instructions_are_client_neutral_but_mention_name_prefixes():

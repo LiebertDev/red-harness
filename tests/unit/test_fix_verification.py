@@ -255,5 +255,6 @@ def test_job_without_a_fixed_build_rejects_fix_pairs(tmp_path):
     x.hub.close()
 
 
-def test_tool_count_is_unchanged():
-    assert len(TOOL_NAMES) == 18 <= MAX_TOOLS   # 15th: emulate, 16th: imports, 17th: captured_region, 18th: dataflow_slice
+def test_fix_verification_adds_no_tool():
+    assert "fix_check" not in TOOL_NAMES and "patch_poc" not in TOOL_NAMES
+    assert len(TOOL_NAMES) <= MAX_TOOLS

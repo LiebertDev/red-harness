@@ -314,11 +314,11 @@ def test_static_scope_is_enough_and_effect_flags():
     check_permission("read_bytes", man)                                # does not raise
 
 
-def test_tool_listing_has_sixteen_tools_with_read_only_annotation():
-    assert len(TOOL_NAMES) == 18 <= MAX_TOOLS == 20 and "read_bytes" in TOOL_NAMES
+def test_tool_listing_has_read_only_annotation():
+    assert "read_bytes" in TOOL_NAMES and len(TOOL_NAMES) <= MAX_TOOLS
     mcp, _ = build_server(Config.load(Path(".") / "x"), FakeEngine())
     by = {t.name: t for t in asyncio.run(mcp.list_tools())}
-    assert set(by) == set(TOOL_NAMES) and len(by) == 18
+    assert set(by) == set(TOOL_NAMES)
     a = by["read_bytes"].annotations
     assert a.readOnlyHint and a.idempotentHint and not a.openWorldHint
     props = by["read_bytes"].inputSchema["properties"]

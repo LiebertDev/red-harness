@@ -1,7 +1,7 @@
 """Job lock: PID + process start time + host. A lock whose holder is dead or whose start time does not match
 (PID reuse) is reclaimed. The lock file is created atomically with full content (tmp + os.link).
 
-Stale-lock reclaim is SERIALIZED by an operating-system lock (msvcrt.locking) on the `<lock>.reclaim` file; if the
+Stale-lock reclaim is SERIALIZED by an operating-system lock (msvcrt.locking on Windows, fcntl.flock on POSIX) on the `<lock>.reclaim` file; if the
 process dies the OS lock drops by itself, so there is no stale-guard-file problem. The old "move aside with
 os.replace, then verify" approach briefly detached a LIVE lock freshly taken by another process from the lock
 path (a third process could slip in and create double ownership). Now: under the guard the lock is re-read; if
@@ -13,15 +13,35 @@ from __future__ import annotations
 
 import contextlib
 import json
-import msvcrt
 import os
 import socket
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from ._win import process_start_time
+from .procinfo import process_start_time
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
+
+def _os_lock(fd: int) -> None:
+    """Non-blocking exclusive OS lock on the fd; OSError if another process holds it."""
+    if sys.platform == "win32":
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _os_unlock(fd: int) -> None:
+    if sys.platform == "win32":
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class LockError(Exception):
@@ -110,7 +130,7 @@ class JobLock:
             while True:
                 try:
                     os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    _os_lock(fd)
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
@@ -120,7 +140,7 @@ class JobLock:
                 yield
             finally:
                 os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                _os_unlock(fd)
         finally:
             os.close(fd)
 

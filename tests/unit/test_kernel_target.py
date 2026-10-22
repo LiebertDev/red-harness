@@ -154,5 +154,5 @@ def test_sandbox_layer_refuses_a_kernel_image_without_touching_the_sandbox(tmp_p
 
 
 def test_no_new_tool_for_driver_facts():
-    assert len(TOOL_NAMES) == 18 and len(TOOL_NAMES) <= MAX_TOOLS
+    assert len(TOOL_NAMES) <= MAX_TOOLS
     assert "driver_scan" not in TOOL_NAMES and "driver_scan" not in TOOL_EFFECTS

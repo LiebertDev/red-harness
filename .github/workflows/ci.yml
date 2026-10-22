@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: unit tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # the emulate extra (Unicorn) so the in-process emulation tests run; off Windows the emulate TOOL still refuses
+      # (EMULATE_PLATFORM_UNSUPPORTED: no hardened worker there), which the unit tests assert
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,emulate]"
+      - name: Check the tested package is this checkout
+        run: >-
+          python -c "import pathlib, redharness; p = pathlib.Path(redharness.__file__).resolve(); assert p.is_relative_to(pathlib.Path('src').resolve()), p; print(p)"
+      # The wheel built from this repository must hold Core modules only, all from the source tree. Public repository
+      # only: a private build may ship the optional modules on purpose.
+      - name: Core-only wheel
+        if: ${{ !github.event.repository.private }}
+        run: |
+          python -m pip wheel --no-deps -w dist .
+          python scripts/check_wheel.py dist --src src
+      # Unit tests only. Tests that need a real engine (Ghidra/IDA), Windows Sandbox or Hyper-V are marked
+      # heavy/real_sandbox/hyperv and live in tests/heavy; they never run here.
+      - name: Unit tests
+        run: python -m pytest tests/unit -q -rs -m "not heavy and not real_sandbox and not hyperv"

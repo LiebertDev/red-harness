@@ -313,3 +313,13 @@ def test_short_cooldown_is_waited_out_then_success_resets_backoff(cfg, target):
 def test_backend_without_new_hooks_is_unaffected(cfg, target):
     sb = FakeSandbox()          # no memory_status / start_error: behavior exactly as before
     assert go(cfg, target, sb).ok
+
+
+def test_windows_sandbox_backend_refuses_off_windows(monkeypatch, tmp_path):
+    """Off Windows the backend reports itself unavailable with the platform as the reason (never a bogus path)."""
+    from redharness.sandbox import backend as backend_mod
+    exe = tmp_path / "WindowsSandbox.exe"
+    exe.write_bytes(b"MZ")                       # even a present file does not make it available
+    monkeypatch.setattr(backend_mod.sys, "platform", "linux")
+    ok, why = WindowsSandboxBackend(exe).available()
+    assert not ok and "only on Windows" in why

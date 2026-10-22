@@ -244,7 +244,9 @@ def test_memory_limit_is_enforced(tmp_path, gdir, log, sample, monkeypatch):
     assert e.probe().available
     monkeypatch.setenv("FAKE_MODE", "mem")
     r = e.open_target(sample)
-    assert r.status is Status.MEMORY_LIMIT and not r.ok
+    # Windows: the Job Object reports the overrun as MEMORY_LIMIT. POSIX: RLIMIT_AS makes the allocation fail inside
+    # the child, which exits non-zero: ERROR (core/proc.py). Never OK on either platform.
+    assert r.status is (Status.MEMORY_LIMIT if sys.platform == "win32" else Status.ERROR) and not r.ok
 
 
 @pytest.mark.parametrize("mode,expected", [("timeout", Status.TIMEOUT), ("decomp_timeout", Status.TIMEOUT),

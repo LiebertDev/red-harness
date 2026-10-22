@@ -37,6 +37,7 @@ from ..base import (DecompileInfo, Disassembly, Engine, EngineInfo, EngineResult
 
 ENV_IDA_DIR = "RH_IDA_DIR"
 ENV_IDA_PYTHON = "RH_IDA_PYTHON"
+ENV_IDA_DECOMPILE_TIMEOUT = "RH_IDA_DECOMPILE_TIMEOUT"  # seconds; decompiler budget (IDA 9.5+), 0 = none
 WORKER = Path(__file__).with_name("_worker.py")
 GB = 1024 ** 3
 log = logging.getLogger(__name__)
@@ -50,12 +51,15 @@ _EDITION_KEYWORDS = ("professional", "classroom", "essential", "expert", "ultima
 STRINGS_REV = 2
 # Query-result revision (part of the per-query cache key): 2 = operand text without IDA colour tags. Bump when the
 # worker's output for the same query changes, so older cached results are not served.
-RESULT_REV = 3   # 3: xrefs carry to_name / to_string / to_string_kind
+# 4: decompile may end in TIMEOUT (IDA 9.5 decompiler budget) instead of a slow Job-Object kill
+RESULT_REV = 4   # 3: xrefs carry to_name / to_string / to_string_kind
 _DROP_ENV = {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "IDAUSR", "IDADIR"}
 # idalib/IDA open paths through the ANSI-limited Windows API: a database path of 260+ characters makes open_database fail
 # (rc=4 or rc=1, "Can't open for read file", measured on 9.4 and 9.5: 259 chars work, 260+ fail), whatever LongPathsEnabled says.
 MAX_IDB_PATH = 259
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+# Decompiler budget for IDA 9.5: this many seconds below the per-query process timeout.
+DECOMPILE_TIMEOUT_MARGIN_S = 30
 # An explicit beta release marker only: "IDA 9.5 Beta", "IDA Pro 9.5 beta 2", "9.5.261001 Beta". A mere mention of
 # "beta" (e.g. "# IDA 9.5 SP1 — beta migration notes") says nothing about the build being a pre-release.
 _BETA_HEADER_RE = re.compile(
@@ -199,6 +203,7 @@ class IdaEngine(Engine):
                  ida_dir: str | os.PathLike | None = None, memory_limit_bytes: int = 6 * GB,
                  analyze_timeout_s: float = 900, query_timeout_s: float = 180,
                  probe_timeout_s: float = 90, lock_wait_s: float = 120,
+                 decompile_timeout_s: float | None = None,
                  worker: str | os.PathLike | None = None):
         self.config = config or Config.load()
         self.python = str(python or os.environ.get(ENV_IDA_PYTHON) or sys.executable)
@@ -208,9 +213,27 @@ class IdaEngine(Engine):
         self.query_timeout_s = query_timeout_s
         self.probe_timeout_s = probe_timeout_s
         self.lock_wait_s = lock_wait_s
+        raw_budget = decompile_timeout_s
+        if raw_budget is None:
+            raw_budget = os.environ.get(ENV_IDA_DECOMPILE_TIMEOUT) or None
+        try:
+            self.decompile_timeout_s = float(raw_budget) if raw_budget is not None else None
+        except (TypeError, ValueError):
+            log.warning("ignoring invalid %s=%r (seconds expected)", ENV_IDA_DECOMPILE_TIMEOUT, raw_budget)
+            self.decompile_timeout_s = None
         self.worker = Path(worker) if worker else WORKER  # a fake worker can be injected in tests
         self._info: EngineInfo | None = None
         self._info_key: tuple | None = None  # identity of the install the cached probe belongs to
+
+    def _decompile_budget_ms(self) -> int:
+        """Decompiler budget handed to IDA 9.5 (milliseconds, 0 = none): slightly below the per-query process
+        timeout, so a runaway function ends as a clean, cacheable TIMEOUT instead of a Job-Object kill."""
+        budget = self.decompile_timeout_s
+        if budget is None:
+            budget = self.query_timeout_s - DECOMPILE_TIMEOUT_MARGIN_S
+            if budget <= 0:
+                budget = self.query_timeout_s / 2
+        return max(0, int(budget * 1000))
 
     # ------------------------------------------------------------------ process
     @property
@@ -254,6 +277,8 @@ class IdaEngine(Engine):
                 err = str(doc.get("error", ""))
                 st = Status.TOOL_MISSING if ("ImportError" in err.split(":")[0] or "ModuleNotFoundError" in err
                                              or "DECOMPILER_UNAVAILABLE" in err) else Status.ERROR
+                if "DECOMPILE_TIMEOUT" in err:
+                    st = Status.TIMEOUT  # IDA 9.5 decompiler budget hit: never OK, never an empty result
                 if st is Status.TOOL_MISSING and "idapro" in err:
                     return st, None, f"worker error: {err}. {idapro_missing_message(self.python)}", rr
                 return st, None, f"worker error: {err}", rr
@@ -498,13 +523,16 @@ class IdaEngine(Engine):
             pass
         with _HEAVY:
             idb = tdir / meta["idb"]
+            extra = {}
+            if op == "decompile":
+                extra["decompile_timeout_ms"] = self._decompile_budget_ms()
             try:
                 if _sha256_file(idb) != meta["idb_sha256"]:
                     (tdir / "meta.json").unlink(missing_ok=True)  # the next open_target re-analyzes
                     return None, _fail(Status.ERROR, "cached .i64 has changed (corrupt); invalidated", t0), False
             except OSError as e:
                 return None, _fail(Status.ERROR, f"could not read .i64: {e}", t0), False
-            st, doc, detail, _ = self._run(op, dict(args, target=str(idb)), self.query_timeout_s)
+            st, doc, detail, _ = self._run(op, dict(args, target=str(idb), **extra), self.query_timeout_s)
             if st is not Status.OK or doc is None:
                 return None, _fail(st, f"{op} failed: {detail}", t0), False
             doc.pop("ok", None)

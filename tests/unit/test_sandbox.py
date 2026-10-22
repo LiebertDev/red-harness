@@ -293,8 +293,11 @@ def test_symlink_or_junction_output_is_refused_and_target_untouched(cfg, target,
 
     def tamper(out):
         os.remove(out / "c000.stdout")
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(out / "c000.stdout"), str(secret)], check=True,
-                       capture_output=True)
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(out / "c000.stdout"), str(secret)], check=True,
+                           capture_output=True)
+        else:
+            os.symlink(secret, out / "c000.stdout", target_is_directory=True)
     r = run(cfg, target, FakeSandbox(post_start=tamper))
     assert r.code == Code.INTEGRITY and "not a plain file" in r.detail and r.cases == []
     assert not r.ok
@@ -415,17 +418,19 @@ def test_host_process_killed_mid_run_is_recovered(cfg, target, tmp_path):
     try:
         jp = sandbox_dir(cfg) / "journal.jsonl"
         deadline = time.monotonic() + 30
-        while time.monotonic() < deadline and not (jp.exists() and b"SANDBOX_STARTED" in jp.read_bytes()):
+        # wait for SANDBOX_PROCS (the launched processes, journaled right AFTER SANDBOX_STARTED): killing in between is
+        # a host that died before it noted its processes, which recovery rightly cannot attribute (BUSY, not this test)
+        while time.monotonic() < deadline and not (jp.exists() and b"SANDBOX_PROCS" in jp.read_bytes()):
             assert p.poll() is None, p.stderr.read().decode()
             time.sleep(0.05)
-        assert b"SANDBOX_STARTED" in jp.read_bytes()
+        assert b"SANDBOX_STARTED" in jp.read_bytes() and b"SANDBOX_PROCS" in jp.read_bytes()
     finally:
         p.kill()
         p.wait()
     assert (workdir_root(cfg)).exists() and any(workdir_root(cfg).iterdir())  # the kill left a half-finished job
     fake = FakeSandbox(preexisting=[101, 102])  # the sandbox whose owner died is still running (the dead host journaled 101/102)
     r = run(cfg, target, fake)
-    assert r.status is Status.OK and len(r.recovered_runs) == 1
+    assert r.status is Status.OK and len(r.recovered_runs) == 1, (r.code, r.detail)
     assert fake.owned_kill_calls >= 1
     assert run_status(cfg, r.recovered_runs[0]) == "FAILED"
 

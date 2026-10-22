@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from redharness.core._win import pid_alive, process_start_time
+from redharness.core.procinfo import pid_alive, process_start_time
 from redharness.core.lock import JobLock, LockError, LockHeldError, LockInfo
 
 

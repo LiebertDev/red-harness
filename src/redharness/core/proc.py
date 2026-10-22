@@ -1,4 +1,5 @@
-"""Bounded process runner (Windows Job Object: memory, time, process tree).
+"""Bounded process runner. Windows: Job Object (memory, time, process tree). POSIX: own session + process-group kill
+(time, process tree) + RLIMIT_AS (memory); `active_process_limit` is refused there (no per-process equivalent).
 
 Fail-closed: timeout, memory overrun, truncated output, missing tool, nonzero exit and failure to set up the
 Job Object never return OK. The process is started suspended (CREATE_SUSPENDED) and resumed after being assigned
@@ -9,16 +10,20 @@ A Job Object is not isolation (for untrusted code use: Windows Sandbox).
 
 from __future__ import annotations
 
-import ctypes
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from ctypes import wintypes
 from typing import Mapping, Sequence
 
-from . import _win as w
 from .result import Status
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    from . import _win as w
 
 DEFAULT_HEAD = 64 * 1024
 DEFAULT_TAIL = 64 * 1024
@@ -163,6 +168,10 @@ def run_bounded(argv: Sequence[str], *, timeout_s: float, memory_limit_bytes: in
                 env: Mapping[str, str] | None = None, head_bytes: int = DEFAULT_HEAD,
                 tail_bytes: int = DEFAULT_TAIL, active_process_limit: int | None = None) -> RunResult:
     """Runs the command inside a job. Only Status.OK is success. `active_process_limit=1`: no child processes."""
+    if sys.platform != "win32":
+        return _run_bounded_posix(argv, timeout_s=timeout_s, memory_limit_bytes=memory_limit_bytes,
+                                  input_bytes=input_bytes, cwd=cwd, env=env, head_bytes=head_bytes,
+                                  tail_bytes=tail_bytes, active_process_limit=active_process_limit)
     t0 = time.monotonic()
 
     def fail(status: Status, detail: str, **kw) -> RunResult:
@@ -257,3 +266,119 @@ def run_bounded(argv: Sequence[str], *, timeout_s: float, memory_limit_bytes: in
                 proc.kill()
             proc.wait()
         job.close()
+
+
+def _group_members(pgid: int) -> int:
+    """Live processes in the process group (Linux /proc; 0 where /proc does not exist). Zombies do not count."""
+    import os
+    n = 0
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return 0
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as f:
+                raw = f.read().decode("ascii", "replace")
+            fields = raw[raw.rindex(")") + 2:].split()
+            if fields[0] != "Z" and int(fields[2]) == pgid:    # state, ppid, pgrp
+                n += 1
+        except (OSError, ValueError, IndexError):
+            continue
+    return n
+
+
+def _run_bounded_posix(argv: Sequence[str], *, timeout_s: float, memory_limit_bytes: int | None,
+                       input_bytes: bytes | None, cwd: str | None, env: Mapping[str, str] | None,
+                       head_bytes: int, tail_bytes: int, active_process_limit: int | None) -> RunResult:
+    """POSIX runner, same fail-closed contract. The child gets its own session (so the whole tree is killed with
+    killpg on timeout or when we leave) and an RLIMIT_AS memory cap. A memory overrun inside the child shows up as
+    a failed allocation, i.e. a non-zero exit (reported as ERROR, not MEMORY_LIMIT). Peak memory is not measured
+    (peak_job_memory=None): getrusage(RUSAGE_CHILDREN) would be the maximum over every child this process ever reaped,
+    not this run. Not isolation."""
+    t0 = time.monotonic()
+
+    def fail(status: Status, detail: str) -> RunResult:
+        return RunResult(status, None, b"", b"", False, time.monotonic() - t0, detail)
+
+    if timeout_s is None or timeout_s <= 0:
+        return fail(Status.ERROR, "timeout_s must be positive")
+    if active_process_limit:
+        return fail(Status.ERROR, "active_process_limit is not supported on this platform (no per-process cap); "
+                                  "the command was not run")
+    import os
+    import resource
+    import signal
+
+    def preexec() -> None:
+        if memory_limit_bytes:
+            resource.setrlimit(resource.RLIMIT_AS, (memory_limit_bytes, memory_limit_bytes))
+
+    try:
+        proc = subprocess.Popen(
+            list(argv), stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=dict(env) if env is not None else None,
+            start_new_session=True, preexec_fn=preexec)
+    except (FileNotFoundError, NotADirectoryError) as e:
+        return fail(Status.TOOL_MISSING, f"could not execute: {e}")
+    except (OSError, subprocess.SubprocessError) as e:
+        return fail(Status.ERROR, f"could not start: {e}")
+
+    def kill_tree() -> bool:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return True    # nothing left in the group
+        except OSError:
+            proc.kill()
+            return False
+        return True
+
+    try:
+        out = _Capture(proc.stdout, head_bytes, tail_bytes)
+        err = _Capture(proc.stderr, head_bytes, tail_bytes)
+        out.start()
+        err.start()
+        if input_bytes is not None:
+            def feed():
+                try:
+                    proc.stdin.write(input_bytes)
+                    proc.stdin.close()
+                except (OSError, ValueError):
+                    pass
+            threading.Thread(target=feed, daemon=True).start()
+        deadline = t0 + timeout_s
+        timed_out = False
+        while proc.poll() is None:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(0.01)
+        orphans = _group_members(proc.pid) - (0 if proc.poll() is not None else 1)
+        term_ok = kill_tree()   # tree: also kills leftovers when the main process has already finished
+        rc = proc.wait()
+        out.join(READER_JOIN_S)
+        err.join(READER_JOIN_S)
+        truncated = out.truncated or err.truncated
+        duration = time.monotonic() - t0
+        if timed_out:
+            status, detail = Status.TIMEOUT, f"{timeout_s}s exceeded; " + (
+                "process tree killed" if term_ok else "killpg FAILED, only the main process was killed")
+        elif rc != 0:
+            status, detail = Status.ERROR, f"exit code {rc}"
+        elif not term_ok:
+            status, detail = Status.ERROR, "killpg failed; process tree could not be cleaned up"
+        elif truncated:
+            status, detail = Status.PARTIAL, "output truncated (head+tail kept)"
+        elif out.is_alive() or err.is_alive():
+            status, detail = Status.ERROR, "output readers did not finish"
+        else:
+            status, detail = Status.OK, ""
+        return RunResult(status, None if timed_out else rc, out.render(), err.render(), truncated,
+                         duration, detail, out.total, err.total, max(orphans, 0), None)
+    finally:
+        if proc.poll() is None:
+            kill_tree()
+            proc.wait()

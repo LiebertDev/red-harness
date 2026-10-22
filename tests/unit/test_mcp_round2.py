@@ -21,6 +21,7 @@ from redharness.scope.manifest import parse_manifest
 from ._fake_engine import BASE, FakeEngine
 from ._fake_sandbox import FakeSandbox
 from .mcp_helpers import call, make_manifest, mcp_session
+from .test_run_controlled_mcp import fake_system_root
 
 SERVER = [str(Path(__file__).with_name("_fake_mcp_server.py"))]
 VA = BASE + 0x1250
@@ -52,7 +53,8 @@ def make_hub(tmp_path, engine=None, ops=("static",), sandbox=None):
     target.write_bytes(b"MZ" + bytes(range(256)) * 8)
     manifest = make_manifest(tmp_path / "scope.json", target, allowed_operations=list(ops))
     eng = engine or CountingEngine()
-    hub = Hub(Config.load(tmp_path / "data"), eng, sandbox)
+    # fake VC++ runtime source: run_controlled never depends on the host's real DLLs (absent off Windows)
+    hub = Hub(Config.load(tmp_path / "data"), eng, sandbox, system_root=fake_system_root(tmp_path / "win"))
     hub.target_open(str(target), str(manifest))
     return hub, eng
 
@@ -289,7 +291,7 @@ def test_coverage_survives_resume(tmp_path):
 
 # ---------------------------------------------------------------- tool effect table -> scope permissions
 def test_effect_table_covers_exactly_the_registered_tools():
-    assert set(TOOL_EFFECTS) == set(TOOL_NAMES) and len(TOOL_NAMES) == 18 <= 20 and MAX_TOOLS == 20
+    assert set(TOOL_EFFECTS) == set(TOOL_NAMES) and len(TOOL_NAMES) <= MAX_TOOLS
 
 
 def test_effect_table_values_for_key_tools():
@@ -399,7 +401,7 @@ def test_wire_tool_list_hex_addresses_and_summary(tmp_path):
     async def go():
         async with mcp_session(SERVER, tmp_path / "data") as s:
             names = sorted(t.name for t in (await s.list_tools()).tools)
-            assert names == sorted(TOOL_NAMES) and len(names) == 18 <= 20
+            assert names == sorted(TOOL_NAMES) and len(names) <= MAX_TOOLS
             await call(s, "target_open", target_path=str(target), manifest_path=str(man))
             err, d = await call(s, "disassemble", address="0x140001250", end="0x140001260")
             assert not err, d

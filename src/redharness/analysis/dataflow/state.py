@@ -138,12 +138,18 @@ class State:
     floor_sites: frozenset = EMPTY
     esc: frozenset = EMPTY          # stack offsets whose address escaped (stored, passed, lost)
     fresh: set = field(default_factory=set)   # offsets written since the last tag_all (the only ones it must visit)
+    eh: frozenset = EMPTY           # reasons when an unmodelled exception handler may rewrite the frame (see put)
 
     def copy(self) -> "State":
         return State(dict(self.regs), dict(self.stack), self.floor, self.floor_why, self.floor_sites, self.esc,
-                     set(self.fresh))
+                     set(self.fresh), self.eh)
 
     def put(self, o: int, v: Val) -> None:
+        if self.eh and v.kind in (CONST, PTRB, RPTRB):
+            # an unmodelled handler may have rewritten this slot before it is read: never definite (docs section 6.4)
+            if v.kind != CONST:
+                self.escape(v.v >> 4)
+            v = Val(UNKNOWN, 0, v.sites, v.why | self.eh, v.srcs, None, v.v & 0xFF if v.kind == CONST else None)
         self.stack[o] = v
         self.fresh.add(o)
 

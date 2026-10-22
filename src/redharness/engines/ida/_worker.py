@@ -130,11 +130,20 @@ def op_decompile(req):
         if not ida_hexrays.init_hexrays_plugin():
             raise RuntimeError("DECOMPILER_UNAVAILABLE: Hex-Rays is unavailable for this database")
         f = resolve_function(req["function"])
+        # IDA 9.5 only: a decompiler budget (milliseconds, 0 = none) that aborts a runaway function with
+        # MERR_TIMEOUT instead of letting the Job Object kill the worker. 9.4 has no such API, so nothing changes.
+        timeout_ms = int(req.get("decompile_timeout_ms") or 0)
+        hf = None
+        if timeout_ms > 0 and hasattr(ida_hexrays, "set_decompiler_timeout"):
+            ida_hexrays.set_decompiler_timeout(timeout_ms)
+            hf = ida_hexrays.hexrays_failure_t()
         try:
-            cf = ida_hexrays.decompile(f.start_ea)
+            cf = ida_hexrays.decompile(f.start_ea, hf) if hf is not None else ida_hexrays.decompile(f.start_ea)
         except ida_hexrays.DecompilationFailure as e:
             raise RuntimeError("DECOMPILE_FAILED: %s" % e)
         if cf is None:
+            if hf is not None and hf.code == ida_hexrays.MERR_TIMEOUT:
+                raise RuntimeError("DECOMPILE_TIMEOUT: MERR_TIMEOUT after %d ms" % timeout_ms)
             raise RuntimeError("DECOMPILE_FAILED: empty result")
         return {"address": f.start_ea, "name": idc.get_func_name(f.start_ea), "text": str(cf)}
     finally:

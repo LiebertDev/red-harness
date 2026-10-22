@@ -113,6 +113,8 @@ class Ctx:
     assumptions: set = field(default_factory=set)     # {"A1", "A2", "A3"}
     call_args: dict = field(default_factory=dict)     # call VA -> callee stack-parameter bytes (None/absent = unknown)
     partial: dict = field(default_factory=dict)       # reason -> first VA
+    eh: frozenset = frozenset()                       # non-empty: unmodelled exception handler (see slicer._step)
+    eh_reasons: tuple = ()
 
     @property
     def fw(self) -> int:

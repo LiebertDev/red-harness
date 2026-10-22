@@ -12,13 +12,14 @@ import io
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Protocol
 from xml.sax.saxutils import escape
 
 from ..config import sandbox_memory_mb
-from ..core._win import process_start_time
+from ..core.procinfo import process_start_time
 from . import hostres, windowguard
 
 _SANDBOX_PROC = re.compile(r"windowssandbox[a-z]*\.exe", re.I)
@@ -113,6 +114,8 @@ class WindowsSandboxBackend:
         self._launched: int | None = None          # PID of the WindowsSandbox.exe we spawned
 
     def available(self) -> tuple[bool, str]:
+        if sys.platform != "win32":
+            return False, f"Windows Sandbox exists only on Windows (this host: {sys.platform})"
         if not self.exe.is_file():
             return False, f"WindowsSandbox.exe missing ({self.exe}); the Containers-DisposableClientVM feature may be off"
         return True, ""

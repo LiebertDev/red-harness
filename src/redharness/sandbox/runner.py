@@ -42,7 +42,7 @@ from typing import Any, Sequence
 from ..analysis.pe_image import PeError, kernel_mode_reasons, parse_pe
 from ..config import Config, sandbox_memory_mb
 from ..core.cas import Cas
-from ..core._win import process_start_time
+from ..core.procinfo import process_start_time
 from ..core.journal import Journal, JournalCorrupt
 from ..core.heavy import heavy_lock, sandbox_global_lock
 from ..core.lock import JobLock, LockError, LockHeldError

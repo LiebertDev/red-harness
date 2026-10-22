@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from redharness.core._win import pid_alive
+from redharness.core.procinfo import pid_alive
 from redharness.core.proc import run_bounded
 from redharness.core.result import Status
 
@@ -71,6 +71,7 @@ def test_orphan_grandchild_killed_after_main_exits(tmp_path):
     assert r.orphans_killed >= 1
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
 def test_memory_limit_job_object():
     limit = 200 * MB
     # below the limit: OK (the limit does not trigger by itself)
@@ -82,6 +83,7 @@ def test_memory_limit_job_object():
     assert b"PASSED" not in r.stdout
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
 def test_memory_hog_swallowing_error_still_flagged():
     code = (
         "try:\n    x = bytearray(1024*1024*1024)\nexcept MemoryError:\n    pass\nprint('swallowed')\n"
@@ -119,6 +121,7 @@ def test_invalid_timeout_rejected():
 
 # ---- Job Object error paths (mock) ----
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
 def test_assign_failure_is_error_and_process_never_runs(tmp_path, monkeypatch):
     from redharness.core import proc as pmod
     marker = tmp_path / "ran.txt"
@@ -133,6 +136,7 @@ def test_assign_failure_is_error_and_process_never_runs(tmp_path, monkeypatch):
     assert not marker.exists(), "process ran outside the job"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
 def test_job_limit_setup_failure_is_error(monkeypatch):
     from redharness.core import proc as pmod
 
@@ -150,6 +154,7 @@ def test_job_limit_setup_failure_is_error(monkeypatch):
     assert r.status is Status.ERROR and not r.ok and "could not set up job" in r.detail
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
 def test_terminate_failure_after_success_is_never_ok(monkeypatch):
     from redharness.core import proc as pmod
     monkeypatch.setattr(pmod._Job, "terminate", lambda self: False)
@@ -158,6 +163,7 @@ def test_terminate_failure_after_success_is_never_ok(monkeypatch):
     assert "TerminateJobObject" in r.detail
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
 def test_terminate_failure_on_timeout_falls_back_to_kill_and_stays_timeout(monkeypatch):
     from redharness.core import proc as pmod
     monkeypatch.setattr(pmod._Job, "terminate", lambda self: False)
@@ -168,6 +174,7 @@ def test_terminate_failure_on_timeout_falls_back_to_kill_and_stays_timeout(monke
     assert time.monotonic() - t0 < 15  # the fallback proc.kill() killed the main process
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
 def test_real_terminate_returns_false_on_bad_handle():
     from redharness.core import proc as pmod
     job = pmod._Job(None)
@@ -190,3 +197,19 @@ def test_reader_thread_exceeding_join_never_ok(monkeypatch):
     assert r.status is Status.ERROR and not r.ok and r.exit_code == 0
     assert "readers did not finish" in r.detail
     assert time.monotonic() - t0 < 5
+
+
+def test_posix_runner_refuses_active_process_limit(monkeypatch):
+    """No per-process cap outside Windows: the request is refused and nothing is run (not silently unbounded)."""
+    monkeypatch.setattr("redharness.core.proc.sys.platform", "linux")
+    r = run_bounded([PY, "-c", "print('ran')"], timeout_s=5, active_process_limit=1)
+    assert r.status is Status.ERROR and not r.ok and b"ran" not in r.stdout
+    assert "active_process_limit" in r.detail
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX runner")
+def test_posix_memory_cap_and_tree_kill():
+    r = py("x = bytearray(1024*1024*1024); print('PASSED')", timeout_s=30, memory_limit_bytes=200 * MB)
+    assert not r.ok and b"PASSED" not in r.stdout
+    r = py("import time; time.sleep(60)", timeout_s=1.0)
+    assert r.status is Status.TIMEOUT and not r.ok and "tree killed" in r.detail
