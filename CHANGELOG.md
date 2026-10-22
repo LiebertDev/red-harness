@@ -3,6 +3,13 @@
 All notable user-facing changes. The project follows [Semantic Versioning](https://semver.org/); the format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.1.1
+
+### Fixed
+- `emulate` on a host that is not Windows is refused with `EMULATE_PLATFORM_UNSUPPORTED`, as the documentation says (it
+  returned `PLATFORM_UNSUPPORTED`).
+- The test suite runs on Linux as well as Windows (host-independent emulate, sandbox and blind-eval tests).
+
 ## 0.1.0 - first public release
 
 The Core edition (Apache-2.0): an MCP server with 18 tools, an evidence ledger, a deterministic claim verifier and a

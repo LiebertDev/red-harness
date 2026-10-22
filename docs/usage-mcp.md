@@ -490,12 +490,27 @@ Paging: `functions_list`/`strings` `offset`+`limit` -> `next_offset`; `decompile
   only), `extra` (an optional package is not installed: `unicorn` for `emulate`), `engine` (the engine has no decompiler for this
   target: `decompile`), `runtime` (the pinned Python for `compute` is not installed), `sandbox` (Windows Sandbox is not
   available: `run_controlled`, `compute`). `code` is the error a call would return.
+  One condition, one `code`, here and in the tool's own replies:
+
+  | `kind` | condition | `code` |
+  |---|---|---|
+  | `registry` | the tool is not in the effect table | `TOOL_NOT_IN_EFFECT_TABLE` |
+  | `target` | kernel-mode image: `run_controlled` | `KERNEL_TARGET_NO_USERMODE_RUN` |
+  | `target` | `functions_list(compare="fixed")` without an open fixed build | `FIXED_BUILD_NOT_OPEN` |
+  | `scope` | `allowed_operations` lacks the permission | `SCOPE_DENIED` |
+  | `edition` | the Pro implementation is not in this build | `DYNAMIC_BACKEND_UNAVAILABLE` |
+  | `platform` | `emulate` on a host that is not Windows (nothing ran) | `EMULATE_PLATFORM_UNSUPPORTED` |
+  | `extra` | `emulate` without the `unicorn` package | `EMULATOR_MISSING` |
+  | `engine` | `decompile` with an engine that has no decompiler | `TOOL_MISSING` |
+  | `runtime` | `compute` without the pinned Python runtime | `COMPUTE_RUNTIME_MISSING` |
+  | `sandbox` | `run_controlled` / `compute` without Windows Sandbox | `SANDBOX_UNAVAILABLE` |
+
 - It is the same decision a call makes: `Hub.call` runs `mcp/availability.py::blocker` before every tool, and the report is
   built from it, so the report cannot disagree with a call (tests/unit/test_availability.py checks every tool over a matrix of
   manifests and installations). `run_controlled(observe)` rows appear in `unavailable` when `run_controlled` is usable but the
   observe permission or the Pro tracer is not. A tool that is usable can still fail on its arguments.
   Error precedence of one call: the kernel-mode refusal (`run_controlled`), then no target (`NO_TARGET`), then the scope
-  (`SCOPE_DENIED`), then availability (`DYNAMIC_BACKEND_UNAVAILABLE`, `PLATFORM_UNSUPPORTED`, `EMULATOR_MISSING`, `TOOL_MISSING`,
+  (`SCOPE_DENIED`), then availability (`DYNAMIC_BACKEND_UNAVAILABLE`, `EMULATE_PLATFORM_UNSUPPORTED`, `EMULATOR_MISSING`, `TOOL_MISSING`,
   `COMPUTE_RUNTIME_MISSING`, `SANDBOX_UNAVAILABLE`), and only then the tool's own checks: argument validation (`BAD_ARGUMENT`)
   and the engine error codes. So a malformed `observe` on a build without the Pro tracer returns
   `DYNAMIC_BACKEND_UNAVAILABLE`, not `BAD_ARGUMENT`.

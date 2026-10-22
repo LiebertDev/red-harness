@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
 OBSERVE_MODULES = ("redharness.dynamic.rhtrace",)   # Pro: run_controlled(observe=...)
 EMULATOR_PACKAGE = "unicorn"                        # optional extra `emulate`
+EMULATE_PLATFORM_CODE = "EMULATE_PLATFORM_UNSUPPORTED"   # the one code for this condition (also emulate/host.py)
 EMULATE_PLATFORM = "win32"                          # the emulation worker is hardened with Windows job objects
 OBSERVE_PROBES = (("run_controlled(observe)", {"observe": {"channels": ["api_trace"]}}),
                   ("run_controlled(observe memory)", {"observe": {"channels": ["api_trace", "memory"]}}))
@@ -133,8 +134,9 @@ def blocker(hub: "Hub", tool: str, args: Mapping[str, Any] | None = None) -> Blo
                        f"dynamic observation (observe) is a {NOT_INCLUDED}. Run without observe.")
     if tool == "emulate":
         if host_platform() != EMULATE_PLATFORM:
-            return Blocker("PLATFORM_UNSUPPORTED", "platform", f"runs on Windows hosts only (this host: {host_platform()})",
-                           f"emulate runs on Windows hosts only (this host: {host_platform()}); no code was run. "
+            return Blocker(EMULATE_PLATFORM_CODE, "platform", f"runs on Windows hosts only (this host: {host_platform()})",
+                           f"emulate runs on Windows hosts only (this host: {host_platform()}): the hardened worker "
+                           "(Low integrity, one-process Job Object) is not available here. No code was run. "
                            "Continue without emulate.")
         if not module_present(EMULATOR_PACKAGE):
             return Blocker("EMULATOR_MISSING", "extra", "Python package 'unicorn' is not installed",

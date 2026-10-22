@@ -25,6 +25,8 @@ from ._fake_engine import FakeEngine
 from ._pe_builder import build_pe
 from .mcp_helpers import make_manifest
 
+pytestmark = pytest.mark.usefixtures("emulate_host_windows")   # in-process runner: independent of the host OS
+
 B64, B32 = 0x140000000, 0x400000
 TEXT = 0x400            # file offset of .text (rva 0x1000) in both builders
 
@@ -384,6 +386,21 @@ def test_stop_is_an_error_with_no_evidence(tmp_path):
         hub.close()
 
 
+def test_off_windows_the_tool_refuses_with_the_documented_code_before_anything_runs(tmp_path, monkeypatch):
+    from redharness.mcp import availability
+    hub = make_hub(tmp_path, with_code(build_pe(True), SUM5_X64))
+    ran = []
+    hub.emulate_runner = lambda *a: ran.append(a)
+    monkeypatch.setattr(availability, "host_platform", lambda: "linux")
+    try:
+        with pytest.raises(ToolFailure) as e:
+            _call(hub, "emulate", function=hex(B64 + 0x1000))
+        assert e.value.code == "EMULATE_PLATFORM_UNSUPPORTED" and "No code was run" in e.value.message
+        assert ran == [] and not _emu_evidence(hub)
+    finally:
+        hub.close()
+
+
 def test_missing_emulator_is_reported_and_nothing_runs(tmp_path, monkeypatch):
     from redharness.emulate import engine
     hub = make_hub(tmp_path, with_code(build_pe(True), SUM5_X64))
@@ -458,7 +475,7 @@ def test_emulate_over_the_real_stdio_protocol(tmp_path):
             return await call(s, "emulate", function=hex(B64 + 0x1000), args=[{"hex": ENC.hex()}, len(ENC)],
                               outputs=[{"arg": 0, "length": len(ENC), "view": "ascii"}])
     err, r = asyncio.run(go())
-    if sys.platform != "win32":   # no hardened worker off Windows: an explicit refusal over the wire, nothing ran
+    if sys.platform != "win32":   # real server process on a real non-Windows host: the documented refusal, nothing ran
         assert err and "EMULATE_PLATFORM_UNSUPPORTED" in str(r) and "No code was run" in str(r), r
         return
     assert not err, r

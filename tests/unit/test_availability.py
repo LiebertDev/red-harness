@@ -7,7 +7,9 @@ or without a decompiler, user-mode or kernel-mode image, compute runtime install
 the outcome of the real call. The hint is guidance only: tool names from the registry, never target text, never evidence.
 """
 import json
+import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +27,7 @@ from .test_emulate import B64, SUM5_X64, _in_process, with_code
 from .test_run_controlled_mcp import fake_system_root
 
 AVAILABILITY_CODES = {"SCOPE_DENIED", "TOOL_NOT_IN_EFFECT_TABLE", "KERNEL_TARGET_NO_USERMODE_RUN",
-                      "DYNAMIC_BACKEND_UNAVAILABLE", "PLATFORM_UNSUPPORTED", "EMULATOR_MISSING", "TOOL_MISSING",
+                      "DYNAMIC_BACKEND_UNAVAILABLE", "EMULATE_PLATFORM_UNSUPPORTED", "EMULATOR_MISSING", "TOOL_MISSING",
                       "COMPUTE_RUNTIME_MISSING", "SANDBOX_UNAVAILABLE"}
 PRO_MODULES = ("redharness.mcp.region_tool", "redharness.dynamic.region_view", "redharness.dynamic.rhtrace")
 
@@ -94,7 +96,7 @@ def _hub(tmp_path, ops, env, monkeypatch):
     if not env.get("unicorn", True):
         real = availability.module_present
         monkeypatch.setattr(availability, "module_present", lambda n: False if n == "unicorn" else real(n))
-    monkeypatch.setattr(availability, "host_platform", lambda: env.get("platform", sys.platform))
+    monkeypatch.setattr(availability, "host_platform", lambda: env.get("platform", "win32"))   # default: a Windows host, so the matrix is the same on every host
     hub._s.decompiler = env.get("decompiler", True)
     if env.get("kernel"):
         hub._s.kernel = ("test: subsystem NATIVE",)
@@ -150,6 +152,53 @@ def test_every_reason_kind_appears_somewhere_in_the_matrix(tmp_path, monkeypatch
             finally:
                 hub.close()
     assert seen == {"scope", "edition", "platform", "extra", "engine", "runtime", "sandbox", "target"}
+
+
+def _documented_blocker_codes() -> set[tuple[str, str]]:
+    """(kind, code) rows of the table in docs/usage-mcp.md (section 'availability')."""
+    text = (Path(__file__).resolve().parents[2] / "docs" / "usage-mcp.md").read_text(encoding="utf-8")
+    return set(re.findall(r"^\s*\| `(\w+)` \| [^|]+ \| `([A-Z_]+)` \|\s*$", text, re.M))
+
+
+def test_every_blocker_condition_has_the_code_the_docs_table_lists(tmp_path, monkeypatch):
+    """One condition, one code: whatever the availability layer refuses with is exactly what docs/usage-mcp.md says,
+    for every reason kind, on any host (the platform is set explicitly)."""
+    documented = _documented_blocker_codes()
+    assert len(documented) >= 10, documented
+    seen: set[tuple[str, str]] = set()
+    combos = [("all", "bare"), ("all", "no_unicorn"), ("static", "full"), ("all", "kernel"), ("run+compute", "no_runtime"),
+              ("all", "no_decompiler"), ("all", "linux"), ("all", "no_sandbox"), ("observe", "core")]
+    for i, (ops, env) in enumerate(combos):
+        with monkeypatch.context() as mp:
+            hub = _hub(tmp_path / str(i), OPS[ops], ENVS[env], mp)
+            try:
+                probes = [(t, CALLS[t]) for t in TOOL_NAMES] + [("run_controlled", p) for _, p in availability.OBSERVE_PROBES]
+                probes += [("functions_list", {"compare": "fixed"}), ("no_such_tool", None)]
+                for tool, args in probes:
+                    b = availability.blocker(hub, tool, args)
+                    if b is not None:
+                        seen.add((b.kind, b.code))
+            finally:
+                hub.close()
+    assert seen == documented, (sorted(seen - documented), sorted(documented - seen))
+
+
+def test_the_off_windows_refusal_is_one_code_and_says_nothing_ran(tmp_path, monkeypatch):
+    from redharness.emulate import host
+    hub = _hub(tmp_path, OPS["all"], ENVS["linux"], monkeypatch)
+    try:
+        b = availability.blocker(hub, "emulate", CALLS["emulate"])
+        assert (b.kind, b.code) == ("platform", "EMULATE_PLATFORM_UNSUPPORTED") and "No code was run" in b.message
+        monkeypatch.setattr(host.sys, "platform", "linux")
+        with pytest.raises(host.WorkerError) as e:   # the layer below refuses with the same code
+            host.run_in_worker("x", "0" * 64, {"timeout_ms": 10})
+        assert e.value.code == b.code
+        kw = CALLS["emulate"]
+        with pytest.raises(ToolFailure) as f:
+            hub.call("emulate", kw, lambda: hub.emulate(**kw))
+        assert f.value.code == b.code
+    finally:
+        hub.close()
 
 
 def test_target_open_carries_the_report_and_a_hint(tmp_path):

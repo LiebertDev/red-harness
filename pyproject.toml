@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "red-harness-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Red Harness: a defensive, evidence-bound reverse-engineering analysis harness"
 readme = "README.md"
 authors = [{name = "LiebertDev"}]

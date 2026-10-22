@@ -101,6 +101,7 @@ def test_decompile_notes_back_the_referenced_table_and_its_section(hub):
     assert dec["status"] == "UNVERIFIED" and "decrypts" in str(dec), dec
 
 
+@pytest.mark.usefixtures("emulate_host_windows")
 def test_emulate_names_the_sections_of_the_request_addresses(tmp_path):
     pytest.importorskip("unicorn")
     from .test_emulate_v2 import RDATA_HELLO, UPPER_COPY, _call, make_hub

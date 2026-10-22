@@ -25,6 +25,8 @@ from ._pe_builder import build_pe
 from .mcp_helpers import make_manifest
 from .test_emulate import B32, B64, ENC, SECRET, SUM5_X64, XOR_LOOP, img, with_code
 
+pytestmark = pytest.mark.usefixtures("emulate_host_windows")   # in-process runner: independent of the host OS
+
 # x64: for (; r8; r8--) *rdx++ = *rcx++ ^ 0x20   (copies an image table into a buffer, upper-casing ASCII)
 UPPER_COPY = bytes.fromhex("4d85c0" "7411" "8a01" "3420" "8802" "48ffc1" "48ffc2" "49ffc8" "ebea" "c3")
 RDATA_HELLO = B64 + 0x2040            # "hello\0" in the builder's .rdata
